@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 import asyncpg
 import httpx
@@ -81,7 +81,7 @@ async def oauth_callback(request: Request):
         return HTMLResponse(content=_error_html("Incomplete token response from HubSpot."), status_code=502)
 
     portal_id = str(hub_id)
-    expires_at = datetime.now(timezone.utc) + timedelta(seconds=1800)
+    expires_at = datetime.utcnow() + timedelta(seconds=1800)
 
     logger.info("Tokens received for portal_id=%s — upserting into DB", portal_id)
 
