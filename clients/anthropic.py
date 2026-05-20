@@ -70,8 +70,12 @@ class AnthropicClient:
             return {"subject": "", "body": "", "followup_days": 5}
 
         try:
-            raw_text = data["content"][0]["text"]
-            result = json.loads(raw_text)
+            raw_text = data["content"][0]["text"].strip()
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("```")[1]
+                if raw_text.startswith("json"):
+                    raw_text = raw_text[4:]
+            result = json.loads(raw_text.strip())
             return {
                 "subject": result["subject"],
                 "body": result["body"],

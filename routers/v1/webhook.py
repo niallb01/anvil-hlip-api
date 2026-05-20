@@ -65,7 +65,16 @@ async def contact_webhook(request: Request, authorization: str | None = Header(d
             str(contact_id),
             str(portal_id),
         )
-        score_contact.delay(str(contact_id), str(portal_id))
+        score_contact.delay(
+            str(contact_id),
+            str(portal_id),
+            first_name or "",
+            last_name or "",
+            job_title or "",
+            company or "",
+            website_url or "",
+            email or "",
+        )
     except Exception as exc:
         logger.exception("DB operation failed for contact_id=%s", contact_id)
         raise HTTPException(status_code=500, detail={"message": "Internal server error"}) from exc

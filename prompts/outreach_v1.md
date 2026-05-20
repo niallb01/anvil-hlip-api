@@ -45,4 +45,4 @@ DO:
 - Sound like a thoughtful person not a SDR running a sequence
 
 Respond with ONLY valid JSON, no markdown, no backticks:
-{"subject": "", "body": "", "followup_days": 0}
+{{"subject": "", "body": "", "followup_days": 0}}

@@ -1,9 +1,11 @@
+
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "engine"))
 import asyncio
 import json
 import logging
-
 import asyncpg
-import httpx
 from celery import Celery
 
 from clients.anthropic import AnthropicClient
@@ -23,11 +25,29 @@ celery_app = Celery(
 
 
 @celery_app.task(name="score_contact")
-def score_contact(contact_id: str, portal_id: str) -> None:
-    asyncio.run(_run_pipeline(contact_id, portal_id))
+def score_contact(
+    contact_id: str,
+    portal_id: str,
+    first_name: str,
+    last_name: str,
+    job_title: str,
+    company: str,
+    website_url: str,
+    email: str,
+) -> None:
+    asyncio.run(_run_pipeline(contact_id, portal_id, first_name, last_name, job_title, company, website_url, email))
 
 
-async def _run_pipeline(contact_id: str, portal_id: str) -> None:
+async def _run_pipeline(
+    contact_id: str,
+    portal_id: str,
+    first_name: str,
+    last_name: str,
+    job_title: str,
+    company: str,
+    website_url: str,
+    email: str,
+) -> None:
     try:
         conn = await asyncpg.connect(settings.DATABASE_URL)
     except Exception:
@@ -35,7 +55,7 @@ async def _run_pipeline(contact_id: str, portal_id: str) -> None:
         return
 
     try:
-        await _pipeline(contact_id, portal_id, conn)
+        await _pipeline(contact_id, portal_id, first_name, last_name, job_title, company, website_url, email, conn)
     except Exception:
         logger.exception("Pipeline failed for contact_id=%s", contact_id)
         try:
@@ -49,7 +69,19 @@ async def _run_pipeline(contact_id: str, portal_id: str) -> None:
         await conn.close()
 
 
-async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
+async def _pipeline(
+    contact_id: str,
+    portal_id: str,
+    first_name: str,
+    last_name: str,
+    job_title: str,
+    company: str,
+    website_url: str,
+    email: str,
+    conn,
+) -> None:
+    full_name = f"{first_name} {last_name}".strip()
+
     # a. Mark job as running
     await conn.execute(
         "UPDATE scoring_jobs SET status = 'running' WHERE contact_id = $1 AND status = 'queued'",
@@ -62,27 +94,7 @@ async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
     if not access_token:
         raise RuntimeError(f"No HubSpot access token for portal_id={portal_id}")
 
-    # c. Fetch contact properties from HubSpot
-    async with httpx.AsyncClient(timeout=15.0) as client:
-        response = await client.get(
-            f"https://api.hubapi.com/crm/v3/objects/contacts/{contact_id}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            params={"properties": "firstname,lastname,jobtitle,company,website"},
-        )
-        response.raise_for_status()
-        contact_data = response.json()
-
-    props = contact_data.get("properties", {})
-    first_name = props.get("firstname") or ""
-    last_name = props.get("lastname") or ""
-    job_title = props.get("jobtitle") or ""
-    company = props.get("company") or ""
-    website_url = props.get("website") or ""
-    full_name = f"{first_name} {last_name}".strip()
-
-    logger.info("Contact fetched: contact_id=%s company=%s website=%s", contact_id, company, website_url)
-
-    # d. Scrape website
+    # c. Scrape website
     firecrawl = FirecrawlClient()
     scrape_result = (
         await firecrawl.scrape(website_url)
@@ -92,7 +104,7 @@ async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
     website_content = scrape_result["content"]
     scrape_quality = "thin" if scrape_result["thin"] else "good"
 
-    # e. Score
+    # d. Score
     scorer = ScorerClient()
     scored = await scorer.score(ScrapedInput(
         name=full_name,
@@ -104,7 +116,7 @@ async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
     signal_evidence = scored.signal_evidence if isinstance(scored.signal_evidence, dict) else {}
     confidence = signal_evidence.get("confidence", 0.0)
 
-    # f. Generate outreach
+    # e. Generate outreach
     anthropic = AnthropicClient()
     outreach = await anthropic.generate_outreach(
         first_name=first_name,
@@ -116,7 +128,7 @@ async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
         rationale=scored.rationale,
     )
 
-    # g. Build sherlock_signal
+    # f. Build sherlock_signal
     sherlock_signal = {
         "schema_version": "v1",
         "product": "hlip",
@@ -134,11 +146,11 @@ async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
         },
     }
 
-    # h. Persist to scored_leads
+    # g. Persist to scored_leads
     await conn.execute(
         """
         INSERT INTO scored_leads (
-            contact_id, portal_id, first_name, last_name, job_title, company, website_url,
+            contact_id, portal_id, email, first_name, last_name, job_title, company, website_url,
             lead_score_ai, industry_fit_ai, company_size_fit_ai, decision_maker_seniority_ai,
             budget_likelihood_score_ai, growth_signals_ai, pain_points_ai,
             budget_likelihood_ai, decision_maker_ai, rationale_ai,
@@ -146,13 +158,13 @@ async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
             draft_subject, draft_body, draft_created_at,
             sherlock_signal
         ) VALUES (
-            $1, $2, $3, $4, $5, $6, $7,
-            $8, $9, $10, $11,
-            $12, $13, $14,
-            $15, $16, $17,
-            $18, $19, $20,
-            $21, $22, NOW(),
-            $23
+            $1, $2, $3, $4, $5, $6, $7, $8,
+            $9, $10, $11, $12,
+            $13, $14, $15,
+            $16, $17, $18,
+            $19, $20, $21,
+            $22, $23, NOW(),
+            $24
         )
         ON CONFLICT (contact_id) DO UPDATE SET
             lead_score_ai = EXCLUDED.lead_score_ai,
@@ -176,6 +188,7 @@ async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
         """,
         str(contact_id),
         str(portal_id),
+        email,
         first_name,
         last_name,
         job_title,
@@ -201,7 +214,7 @@ async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
 
     logger.info("Lead persisted: contact_id=%s lead_score=%s", contact_id, scored.lead_score)
 
-    # i. Write HubSpot custom properties
+    # h. Write HubSpot custom properties
     await hs.update_contact_properties(
         contact_id,
         access_token,
@@ -220,14 +233,14 @@ async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
         },
     )
 
-    # j. Write rationale note
+    # i. Write rationale note
     await hs.create_note(
         contact_id,
         access_token,
         f"Anvil HLIP Score: {scored.lead_score}/100\n\n{scored.rationale}",
     )
 
-    # k. Write outreach draft note
+    # j. Write outreach draft note
     if outreach["subject"] or outreach["body"]:
         await hs.create_note(
             contact_id,
@@ -235,7 +248,7 @@ async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
             f"Draft outreach\nSubject: {outreach['subject']}\n\n{outreach['body']}",
         )
 
-    # l. Slack alert
+    # k. Slack alert
     await SlackClient().send_alert(
         contact_id=contact_id,
         first_name=first_name,
@@ -247,7 +260,7 @@ async def _pipeline(contact_id: str, portal_id: str, conn) -> None:
         decision_maker=scored.decision_maker,
     )
 
-    # m. Mark job completed
+    # l. Mark job completed
     await conn.execute(
         "UPDATE scoring_jobs SET status = 'completed', completed_at = NOW() WHERE contact_id = $1",
         contact_id,
