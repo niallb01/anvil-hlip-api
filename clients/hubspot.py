@@ -69,6 +69,46 @@ class HubSpotClient:
         except Exception:
             logger.exception("HubSpot note error: contact_id=%s", contact_id)
 
+    async def create_email_draft(
+        self,
+        contact_id: str,
+        access_token: str,
+        subject: str,
+        body: str,
+    ) -> None:
+        timestamp_ms = int(datetime.utcnow().timestamp() * 1000)
+        payload = {
+            "properties": {
+                "hs_email_subject": subject,
+                "hs_email_html": body.replace("\n", "<br>"),
+                "hs_email_direction": "EMAIL",
+                "hs_email_status": "DRAFT",
+                "hs_timestamp": timestamp_ms,
+            },
+            "associations": [
+                {
+                    "to": {"id": contact_id},
+                    "types": [{"associationCategory": "HUBSPOT_DEFINED", "associationTypeId": 198}],
+                }
+            ],
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(
+                    "https://api.hubapi.com/crm/v3/objects/emails",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    json=payload,
+                )
+                response.raise_for_status()
+                logger.info("HubSpot email draft created for contact_id=%s", contact_id)
+        except httpx.HTTPStatusError as exc:
+            logger.error(
+                "HubSpot email draft failed: contact_id=%s status=%s body=%s",
+                contact_id, exc.response.status_code, exc.response.text,
+            )
+        except Exception:
+            logger.exception("HubSpot email draft error: contact_id=%s", contact_id)
+
     async def create_custom_properties(self, access_token: str) -> None:
         properties = [
             {"name": "lead_score_ai", "label": "Lead Score (Anvil)", "type": "number", "fieldType": "number"},
@@ -163,18 +203,18 @@ class HubSpotClient:
     ) -> None:
         dm = "Yes" if decision_maker else "No"
         confidence_pct = round(confidence * 100, 1)
-        body = (
-            f"🎯 ANVIL HLIP BRIEFING\n\n"
-            f"Contact: {first_name} {last_name} | {job_title} at {company}\n"
-            f"Score: {lead_score}/100 | Budget: {budget_likelihood} | Decision maker: {dm}\n"
-            f"Confidence: {confidence_pct}%\n\n"
-            f"OUTREACH DRAFT\n"
-            f"Subject: {draft_subject}\n\n"
-            f"{draft_body}\n\n"
-            f"RATIONALE\n"
-            f"{rationale}"
+
+        briefing = (
+    f"🎯 Anvil HLIP Briefing\n\n"
+    f"Contact: {first_name} {last_name} | {job_title} at {company}\n\n"
+    f"Score: {lead_score}/100\n"
+    f"Budget likelihood: {budget_likelihood.capitalize()}\n"
+    f"Decision maker: {dm}\n"
+    f"Confidence: {confidence_pct}%"
         )
-        await self.create_note(contact_id, access_token, body)
+
+        await self.create_note(contact_id, access_token, briefing)
+        await self.create_email_draft(contact_id, access_token, draft_subject, draft_body)
 
     async def get_access_token(
         self,
