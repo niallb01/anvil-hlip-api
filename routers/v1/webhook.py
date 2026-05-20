@@ -5,6 +5,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from config import settings
+from workers.scoring_pipeline import score_contact
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ async def contact_webhook(request: Request, authorization: str | None = Header(d
             str(contact_id),
             str(portal_id),
         )
+        score_contact.delay(str(contact_id), str(portal_id))
     except Exception as exc:
         logger.exception("DB operation failed for contact_id=%s", contact_id)
         raise HTTPException(status_code=500, detail={"message": "Internal server error"}) from exc
