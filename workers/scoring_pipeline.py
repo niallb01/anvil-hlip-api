@@ -233,22 +233,24 @@ async def _pipeline(
         },
     )
 
-    # i. Write rationale note
-    await hs.create_note(
-        contact_id,
-        access_token,
-        f"Anvil HLIP Score: {scored.lead_score}/100\n\n{scored.rationale}",
+    # i. Write sales briefing note
+    await hs.create_sales_briefing_note(
+        contact_id=contact_id,
+        access_token=access_token,
+        first_name=first_name,
+        last_name=last_name,
+        job_title=job_title,
+        company=company,
+        lead_score=scored.lead_score,
+        budget_likelihood=scored.budget_likelihood,
+        decision_maker=scored.decision_maker,
+        confidence=confidence,
+        draft_subject=outreach["subject"],
+        draft_body=outreach["body"],
+        rationale=scored.rationale,
     )
 
-    # j. Write outreach draft note
-    if outreach["subject"] or outreach["body"]:
-        await hs.create_note(
-            contact_id,
-            access_token,
-            f"Draft outreach\nSubject: {outreach['subject']}\n\n{outreach['body']}",
-        )
-
-    # k. Slack alert
+    # j. Slack alert
     await SlackClient().send_alert(
         contact_id=contact_id,
         first_name=first_name,

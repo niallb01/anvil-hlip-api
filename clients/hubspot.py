@@ -69,6 +69,104 @@ class HubSpotClient:
         except Exception as exc:
             logger.exception("HubSpot note error: contact_id=%s", contact_id)
 
+    async def create_custom_properties(self, access_token: str) -> None:
+        properties = [
+            {"name": "lead_score_ai", "label": "Lead Score (Anvil)", "type": "number", "fieldType": "number"},
+            {"name": "industry_fit_ai", "label": "Industry Fit (Anvil)", "type": "number", "fieldType": "number"},
+            {"name": "company_size_fit_ai", "label": "Company Size Fit (Anvil)", "type": "number", "fieldType": "number"},
+            {"name": "decision_maker_seniority_ai", "label": "Decision Maker Seniority (Anvil)", "type": "number", "fieldType": "number"},
+            {"name": "budget_likelihood_score_ai", "label": "Budget Likelihood Score (Anvil)", "type": "number", "fieldType": "number"},
+            {"name": "growth_signals_ai", "label": "Growth Signals (Anvil)", "type": "number", "fieldType": "number"},
+            {"name": "pain_points_ai", "label": "Pain Points (Anvil)", "type": "string", "fieldType": "textarea"},
+            {
+                "name": "budget_likelihood_ai",
+                "label": "Budget Likelihood (Anvil)",
+                "type": "enumeration",
+                "fieldType": "select",
+                "options": [
+                    {"label": "High", "value": "high"},
+                    {"label": "Medium", "value": "medium"},
+                    {"label": "Low", "value": "low"},
+                    {"label": "Unknown", "value": "unknown"},
+                ],
+            },
+            {"name": "decision_maker_ai", "label": "Decision Maker (Anvil)", "type": "bool", "fieldType": "booleancheckbox"},
+            {"name": "rationale_ai", "label": "Rationale (Anvil)", "type": "string", "fieldType": "textarea"},
+            {
+                "name": "anvil_outcome",
+                "label": "Anvil Outcome",
+                "type": "enumeration",
+                "fieldType": "select",
+                "options": [
+                    {"label": "Pending", "value": "pending"},
+                    {"label": "In Progress", "value": "in_progress"},
+                    {"label": "Nurture", "value": "nurture"},
+                    {"label": "Won", "value": "won"},
+                    {"label": "Lost", "value": "lost"},
+                ],
+            },
+        ]
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            for prop in properties:
+                payload = {
+                    "groupName": "contactinformation",
+                    "name": prop["name"],
+                    "label": prop["label"],
+                    "type": prop["type"],
+                    "fieldType": prop["fieldType"],
+                }
+                if "options" in prop:
+                    payload["options"] = prop["options"]
+                try:
+                    response = await client.post(
+                        "https://api.hubapi.com/crm/v3/properties/contacts",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        json=payload,
+                    )
+                    if response.status_code == 409:
+                        logger.info("HubSpot property already exists: %s", prop["name"])
+                        continue
+                    response.raise_for_status()
+                    logger.info("HubSpot property created: %s", prop["name"])
+                except httpx.HTTPStatusError as exc:
+                    logger.error(
+                        "Failed to create property %s: %s %s",
+                        prop["name"], exc.response.status_code, exc.response.text,
+                    )
+                except Exception:
+                    logger.exception("Unexpected error creating property %s", prop["name"])
+
+    async def create_sales_briefing_note(
+        self,
+        contact_id: str,
+        access_token: str,
+        first_name: str,
+        last_name: str,
+        job_title: str,
+        company: str,
+        lead_score: int,
+        budget_likelihood: str,
+        decision_maker: bool,
+        confidence: float,
+        draft_subject: str,
+        draft_body: str,
+        rationale: str,
+    ) -> None:
+        dm = "Yes" if decision_maker else "No"
+        confidence_pct = round(confidence * 100, 1)
+        body = (
+            f"🎯 ANVIL HLIP BRIEFING\n\n"
+            f"Contact: {first_name} {last_name} | {job_title} at {company}\n"
+            f"Score: {lead_score}/100 | Budget: {budget_likelihood} | Decision maker: {dm}\n"
+            f"Confidence: {confidence_pct}%\n\n"
+            f"OUTREACH DRAFT\n"
+            f"Subject: {draft_subject}\n\n"
+            f"{draft_body}\n\n"
+            f"RATIONALE\n"
+            f"{rationale}"
+        )
+        await self.create_note(contact_id, access_token, body)
+
     async def get_access_token(
         self,
         portal_id: str,

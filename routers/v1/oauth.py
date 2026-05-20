@@ -6,6 +6,7 @@ import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
+from clients.hubspot import HubSpotClient
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,10 @@ async def oauth_callback(request: Request):
         return HTMLResponse(content=_error_html("Failed to store connection. Please try again."), status_code=500)
     finally:
         await conn.close()
+
+    logger.info("Setting up portal properties for portal_id=%s", portal_id)
+    hs = HubSpotClient()
+    await hs.create_custom_properties(access_token)
 
     logger.info("OAuth flow complete for portal_id=%s", portal_id)
     return HTMLResponse(content=_SUCCESS_HTML, status_code=200)
