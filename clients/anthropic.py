@@ -72,7 +72,12 @@ class AnthropicClient:
         try:
             raw_text = data["content"][0]["text"]
             result = json.loads(raw_text)
-            return {"subject": result["subject"], "body": result["body"]}
+            # return {"subject": result["subject"], "body": result["body"]}
+            return {
+    "subject": result["subject"],
+    "body": result["body"],
+    "followup_days": result.get("followup_days", 5)
+}
         except Exception as exc:
             logger.error("Failed to parse Anthropic response: %s — raw: %s", exc, data)
             return {"subject": "", "body": ""}
