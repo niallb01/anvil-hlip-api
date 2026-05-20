@@ -30,7 +30,7 @@ class HubSpotClient:
                 "HubSpot update failed: contact_id=%s status=%s body=%s",
                 contact_id, exc.response.status_code, exc.response.text,
             )
-        except Exception as exc:
+        except Exception:
             logger.exception("HubSpot update error: contact_id=%s", contact_id)
 
     async def create_note(
@@ -66,7 +66,7 @@ class HubSpotClient:
                 "HubSpot note failed: contact_id=%s status=%s body=%s",
                 contact_id, exc.response.status_code, exc.response.text,
             )
-        except Exception as exc:
+        except Exception:
             logger.exception("HubSpot note error: contact_id=%s", contact_id)
 
     async def create_custom_properties(self, access_token: str) -> None:
@@ -90,7 +90,16 @@ class HubSpotClient:
                     {"label": "Unknown", "value": "unknown"},
                 ],
             },
-            {"name": "decision_maker_ai", "label": "Decision Maker (Anvil)", "type": "bool", "fieldType": "booleancheckbox"},
+            {
+                "name": "decision_maker_ai",
+                "label": "Decision Maker (Anvil)",
+                "type": "bool",
+                "fieldType": "booleancheckbox",
+                "options": [
+                    {"label": "Yes", "value": "true", "displayOrder": 0, "hidden": False},
+                    {"label": "No", "value": "false", "displayOrder": 1, "hidden": False},
+                ],
+            },
             {"name": "rationale_ai", "label": "Rationale (Anvil)", "type": "string", "fieldType": "textarea"},
             {
                 "name": "anvil_outcome",
@@ -208,7 +217,7 @@ class HubSpotClient:
                 portal_id, exc.response.status_code, exc.response.text,
             )
             return None
-        except Exception as exc:
+        except Exception:
             logger.exception("HubSpot token refresh error: portal_id=%s", portal_id)
             return None
 
