@@ -19,20 +19,25 @@ class SlackClient:
         lead_score: int,
         budget_likelihood: str,
         decision_maker: bool,
+        website_url: str = "",
     ) -> None:
         if lead_score < 60:
             return
 
+        dm = "Yes" if decision_maker else "No"
         text = (
             f"🎯 *New High-Score Lead*\n"
             f"*Name:* {first_name} {last_name}\n"
             f"*Company:* {company}\n"
             f"*Title:* {job_title}\n"
             f"*Score:* {lead_score}/100\n"
-            f"*Budget:* {budget_likelihood}\n"
-            f"*Decision maker:* {'yes' if decision_maker else 'no'}\n"
+            f"*Budget:* {budget_likelihood.capitalize()}\n"
+            f"*Decision maker:* {dm}\n"
             f"*HubSpot:* https://app.hubspot.com/contacts/{contact_id}"
         )
+
+        if website_url:
+            text += f"\n*Website:* {website_url}"
 
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:

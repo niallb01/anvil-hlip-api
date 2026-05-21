@@ -260,6 +260,7 @@ async def _pipeline(
         lead_score=scored.lead_score,
         budget_likelihood=scored.budget_likelihood,
         decision_maker=scored.decision_maker,
+        website_url=website_url,
     )
 
     # l. Mark job completed
