@@ -20,7 +20,8 @@ async def contact_webhook(request: Request):
     logger.info("Webhook received — raw body: %s", raw_body[:500])
 
     try:
-        payload = json.loads(raw_body)
+        body = json.loads(raw_body)
+        payload = body[0] if isinstance(body, list) else body
     except Exception:
         raise HTTPException(status_code=400, detail={"message": "Invalid JSON body"})
 
