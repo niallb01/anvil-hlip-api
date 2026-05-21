@@ -80,7 +80,7 @@ class HubSpotClient:
         payload = {
             "properties": {
                 "hs_email_subject": subject,
-                "hs_email_html": body.replace("\n", "<br>"),
+                "hs_email_html": f"<strong>Subject: {subject}</strong><br><br>" + body.replace("\n", "<br>"),
                 "hs_email_direction": "EMAIL",
                 "hs_email_status": "DRAFT",
                 "hs_timestamp": timestamp_ms,
