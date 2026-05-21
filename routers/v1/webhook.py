@@ -32,6 +32,7 @@ async def contact_webhook(
     x_hubspot_signature: str | None = Header(default=None),
 ):
     raw_body = await request.body()
+    logger.info("Webhook received — raw body: %s", raw_body[:500])
 
     _verify_hubspot_signature(raw_body, x_hubspot_signature)
 
