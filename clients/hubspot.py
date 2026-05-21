@@ -210,7 +210,7 @@ class HubSpotClient:
     f"Score: {lead_score}/100\n"
     f"Budget likelihood: {budget_likelihood.capitalize()}\n"
     f"Decision maker: {dm}\n"
-    f"Confidence: {confidence_pct}%"
+ f"Confidence: {confidence_pct}%\n"
         )
 
         await self.create_note(contact_id, access_token, briefing)
