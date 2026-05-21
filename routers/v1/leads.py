@@ -1,7 +1,7 @@
 import logging
 
 import asyncpg
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 
 from config import settings
 
@@ -12,20 +12,25 @@ router = APIRouter()
 VALID_OUTCOMES = {"pending", "in_progress", "nurture", "won", "lost"}
 
 
-def _verify_api_key(authorization: str | None) -> None:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail={"message": "Missing or malformed Authorization header"})
-    token = authorization.removeprefix("Bearer ")
-    if token != settings.ANVIL_API_KEY:
-        raise HTTPException(status_code=403, detail={"message": "Invalid API key"})
-
-
 async def _get_db_conn():
     try:
         return await asyncpg.connect(settings.DATABASE_URL)
     except Exception as exc:
         logger.exception("DB connection failed")
         raise HTTPException(status_code=503, detail={"message": "Database unavailable"}) from exc
+
+
+async def _verify_portal(request: Request, conn) -> str:
+    portal_id = request.headers.get("X-HubSpot-Portal-Id")
+    if not portal_id:
+        raise HTTPException(status_code=401, detail={"message": "Missing X-HubSpot-Portal-Id header"})
+    row = await conn.fetchrow(
+        "SELECT id FROM hubspot_connections WHERE portal_id = $1",
+        portal_id,
+    )
+    if not row:
+        raise HTTPException(status_code=403, detail={"message": "Portal not connected"})
+    return portal_id
 
 
 async def _get_lead_or_404(conn, contact_id: str):
@@ -39,10 +44,10 @@ async def _get_lead_or_404(conn, contact_id: str):
 
 
 @router.get("/leads/{contact_id}")
-async def get_lead(contact_id: str, authorization: str | None = Header(default=None)):
-    _verify_api_key(authorization)
+async def get_lead(contact_id: str, request: Request):
     conn = await _get_db_conn()
     try:
+        await _verify_portal(request, conn)
         row = await _get_lead_or_404(conn, contact_id)
         return dict(row)
     finally:
@@ -50,12 +55,7 @@ async def get_lead(contact_id: str, authorization: str | None = Header(default=N
 
 
 @router.post("/leads/{contact_id}/outcome")
-async def update_outcome(
-    contact_id: str,
-    body: dict,
-    authorization: str | None = Header(default=None),
-):
-    _verify_api_key(authorization)
+async def update_outcome(contact_id: str, body: dict, request: Request):
     status = body.get("status")
     if status not in VALID_OUTCOMES:
         raise HTTPException(
@@ -65,6 +65,7 @@ async def update_outcome(
 
     conn = await _get_db_conn()
     try:
+        await _verify_portal(request, conn)
         row = await _get_lead_or_404(conn, contact_id)
         previous = row["deal_outcome_ai"]
 
@@ -95,10 +96,10 @@ async def update_outcome(
 
 
 @router.post("/leads/{contact_id}/hide")
-async def hide_lead(contact_id: str, authorization: str | None = Header(default=None)):
-    _verify_api_key(authorization)
+async def hide_lead(contact_id: str, request: Request):
     conn = await _get_db_conn()
     try:
+        await _verify_portal(request, conn)
         await _get_lead_or_404(conn, contact_id)
         await conn.execute(
             "UPDATE scored_leads SET panel_hidden = true WHERE contact_id = $1",
@@ -112,10 +113,10 @@ async def hide_lead(contact_id: str, authorization: str | None = Header(default=
 
 
 @router.post("/leads/{contact_id}/show")
-async def show_lead(contact_id: str, authorization: str | None = Header(default=None)):
-    _verify_api_key(authorization)
+async def show_lead(contact_id: str, request: Request):
     conn = await _get_db_conn()
     try:
+        await _verify_portal(request, conn)
         await _get_lead_or_404(conn, contact_id)
         await conn.execute(
             "UPDATE scored_leads SET panel_hidden = false WHERE contact_id = $1",
