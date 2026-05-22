@@ -1,4 +1,8 @@
+import base64
+import hashlib
+import hmac
 import logging
+import time
 
 import asyncpg
 from fastapi import APIRouter, HTTPException, Request
@@ -10,6 +14,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 VALID_OUTCOMES = {"pending", "in_progress", "nurture", "won", "lost"}
+_MAX_TIMESTAMP_AGE_SECONDS = 300
 
 
 async def _get_db_conn():
@@ -20,16 +25,49 @@ async def _get_db_conn():
         raise HTTPException(status_code=503, detail={"message": "Database unavailable"}) from exc
 
 
-async def _verify_portal(request: Request, conn) -> str:
-    portal_id = request.headers.get("X-HubSpot-Portal-Id")
+async def _verify_hubspot_request(request: Request, conn) -> str:
+    signature = request.headers.get("X-HubSpot-Signature-v3")
+    timestamp = request.headers.get("X-HubSpot-Request-Timestamp")
+
+    if not signature:
+        raise HTTPException(status_code=401, detail={"message": "Missing X-HubSpot-Signature-v3 header"})
+    if not timestamp:
+        raise HTTPException(status_code=401, detail={"message": "Missing X-HubSpot-Request-Timestamp header"})
+
+    try:
+        ts_ms = int(timestamp)
+    except ValueError:
+        raise HTTPException(status_code=403, detail={"message": "Invalid timestamp"})
+
+    age_seconds = time.time() - ts_ms / 1000
+    if age_seconds > _MAX_TIMESTAMP_AGE_SECONDS:
+        raise HTTPException(status_code=403, detail={"message": "Request timestamp too old"})
+
+    body_bytes = await request.body()
+    source = request.method + str(request.url) + body_bytes.decode("utf-8") + timestamp
+
+    expected = base64.b64encode(
+        hmac.new(
+            settings.HUBSPOT_CLIENT_SECRET.encode("utf-8"),
+            source.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+    ).decode("utf-8")
+
+    if not hmac.compare_digest(expected, signature):
+        raise HTTPException(status_code=403, detail={"message": "Invalid signature"})
+
+    portal_id = request.query_params.get("portalId")
     if not portal_id:
-        raise HTTPException(status_code=401, detail={"message": "Missing X-HubSpot-Portal-Id header"})
+        raise HTTPException(status_code=401, detail={"message": "Missing portalId query parameter"})
+
     row = await conn.fetchrow(
         "SELECT id FROM hubspot_connections WHERE portal_id = $1",
         portal_id,
     )
     if not row:
         raise HTTPException(status_code=403, detail={"message": "Portal not connected"})
+
     return portal_id
 
 
@@ -47,7 +85,7 @@ async def _get_lead_or_404(conn, contact_id: str):
 async def get_lead(contact_id: str, request: Request):
     conn = await _get_db_conn()
     try:
-        await _verify_portal(request, conn)
+        await _verify_hubspot_request(request, conn)
         row = await _get_lead_or_404(conn, contact_id)
         return dict(row)
     finally:
@@ -65,7 +103,7 @@ async def update_outcome(contact_id: str, body: dict, request: Request):
 
     conn = await _get_db_conn()
     try:
-        await _verify_portal(request, conn)
+        await _verify_hubspot_request(request, conn)
         row = await _get_lead_or_404(conn, contact_id)
         previous = row["deal_outcome_ai"]
 
@@ -99,7 +137,7 @@ async def update_outcome(contact_id: str, body: dict, request: Request):
 async def hide_lead(contact_id: str, request: Request):
     conn = await _get_db_conn()
     try:
-        await _verify_portal(request, conn)
+        await _verify_hubspot_request(request, conn)
         await _get_lead_or_404(conn, contact_id)
         await conn.execute(
             "UPDATE scored_leads SET panel_hidden = true WHERE contact_id = $1",
@@ -116,7 +154,7 @@ async def hide_lead(contact_id: str, request: Request):
 async def show_lead(contact_id: str, request: Request):
     conn = await _get_db_conn()
     try:
-        await _verify_portal(request, conn)
+        await _verify_hubspot_request(request, conn)
         await _get_lead_or_404(conn, contact_id)
         await conn.execute(
             "UPDATE scored_leads SET panel_hidden = false WHERE contact_id = $1",
