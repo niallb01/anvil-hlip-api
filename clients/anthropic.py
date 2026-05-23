@@ -27,7 +27,7 @@ class AnthropicClient:
             template = _PROMPT_PATH.read_text(encoding="utf-8")
         except Exception:
             logger.exception("Failed to load prompt template")
-            return {"subject": "", "body": "", "followup_days": 5}
+            return {"subject": "", "body": "", "followup_days": 5, "rationale": ""}
 
         prompt = template.format(
             first_name=first_name,
@@ -61,13 +61,13 @@ class AnthropicClient:
                 data = response.json()
         except httpx.HTTPStatusError as exc:
             logger.error("Anthropic HTTP error: %s %s", exc.response.status_code, exc.response.text)
-            return {"subject": "", "body": "", "followup_days": 5}
+            return {"subject": "", "body": "", "followup_days": 5, "rationale": ""}
         except httpx.TimeoutException:
             logger.error("Anthropic timeout for company=%s", company)
-            return {"subject": "", "body": "", "followup_days": 5}
+            return {"subject": "", "body": "", "followup_days": 5, "rationale": ""}
         except Exception:
             logger.exception("Anthropic unexpected error for company=%s", company)
-            return {"subject": "", "body": "", "followup_days": 5}
+            return {"subject": "", "body": "", "followup_days": 5, "rationale": ""}
 
         try:
             raw_text = data["content"][0]["text"].strip()
@@ -80,7 +80,8 @@ class AnthropicClient:
                 "subject": result["subject"],
                 "body": result["body"],
                 "followup_days": result.get("followup_days", 5),
+                "rationale": result.get("rationale", ""),
             }
         except Exception as exc:
             logger.error("Failed to parse Anthropic response: %s — raw: %s", exc, data)
-            return {"subject": "", "body": "", "followup_days": 5}
+            return {"subject": "", "body": "", "followup_days": 5, "rationale": ""}

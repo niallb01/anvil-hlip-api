@@ -44,5 +44,7 @@ DO:
 - Make them feel like you did real homework
 - Sound like a thoughtful person not a SDR running a sequence
 
+rationale: 2-3 sentences of plain English explaining why this lead scored the way it did. Reference specific signals observed on their website. Written for a sales rep — no technical jargon, no mention of Anvil Scout internals. Focus on: what the company does, why the contact is the right person, what signals suggest budget and intent.
+
 Respond with ONLY valid JSON, no markdown, no backticks:
-{{"subject": "", "body": "", "followup_days": 0}}
+{{"subject": "", "body": "", "followup_days": 0, "rationale": ""}}
