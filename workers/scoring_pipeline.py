@@ -217,7 +217,7 @@ async def _pipeline(
         ", ".join(outreach.get("pain_points", [])),
         scored.budget_likelihood,
         scored.decision_maker,
-        scored.rationale,
+        outreach.get("rationale", ""),
         json.dumps(signal_evidence),
         scrape_quality,
         confidence,
@@ -242,7 +242,7 @@ async def _pipeline(
             "pain_points_ai": ", ".join(scored.pain_points) if scored.pain_points else "",
             "budget_likelihood_ai": scored.budget_likelihood,
             "decision_maker_ai": "true" if scored.decision_maker else "false",
-            "rationale_ai": scored.rationale,
+            "rationale_ai": outreach.get("rationale", ""),
             "anvil_outcome": "pending",
         },
     )
