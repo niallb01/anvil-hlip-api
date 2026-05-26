@@ -22,14 +22,18 @@ class AnthropicClient:
         website_url: str,
         website_content: str,
         scrape_quality: str,
-        pain_points: list[str],
-        rationale: str,
+        lead_score: int,
+        decision_maker: bool,
+        budget_likelihood: str,
+        verified_signals: list[str],
+        weak_signals: list[str],
+        missing_signals: list[str],
     ) -> dict:
         try:
             template = _PROMPT_PATH.read_text(encoding="utf-8")
         except Exception:
             logger.exception("Failed to load prompt template")
-            return {"subject": "", "body": "", "followup_days": 5, "rationale": ""}
+            return {"subject": "", "body": "", "followup_days": 5, "rationale": "", "pain_points": []}
 
         name = f"{first_name} {last_name}".strip()
         prompt = template.format(
@@ -40,13 +44,17 @@ class AnthropicClient:
             website_url=website_url,
             website_content=website_content,
             scrape_quality=scrape_quality,
-            pain_points=", ".join(pain_points) if pain_points else "none identified",
-            rationale=rationale,
+            lead_score=lead_score,
+            decision_maker="Yes" if decision_maker else "No",
+            budget_likelihood=budget_likelihood,
+            verified_signals="\n".join(f"- {s}" for s in verified_signals) if verified_signals else "None identified",
+            weak_signals="\n".join(f"- {s}" for s in weak_signals) if weak_signals else "None identified",
+            missing_signals="\n".join(f"- {s}" for s in missing_signals) if missing_signals else "None identified",
         )
 
         payload = {
             "model": "claude-sonnet-4-20250514",
-            "max_tokens": 1000,
+            "max_tokens": 1500,
             "temperature": 0,
             "messages": [{"role": "user", "content": prompt}],
         }
@@ -66,13 +74,13 @@ class AnthropicClient:
                 data = response.json()
         except httpx.HTTPStatusError as exc:
             logger.error("Anthropic HTTP error: %s %s", exc.response.status_code, exc.response.text)
-            return {"subject": "", "body": "", "followup_days": 5, "rationale": ""}
+            return {"subject": "", "body": "", "followup_days": 5, "rationale": "", "pain_points": []}
         except httpx.TimeoutException:
             logger.error("Anthropic timeout for company=%s", company)
-            return {"subject": "", "body": "", "followup_days": 5, "rationale": ""}
+            return {"subject": "", "body": "", "followup_days": 5, "rationale": "", "pain_points": []}
         except Exception:
             logger.exception("Anthropic unexpected error for company=%s", company)
-            return {"subject": "", "body": "", "followup_days": 5, "rationale": ""}
+            return {"subject": "", "body": "", "followup_days": 5, "rationale": "", "pain_points": []}
 
         try:
             raw_text = data["content"][0]["text"].strip()
@@ -86,7 +94,8 @@ class AnthropicClient:
                 "body": result["body"],
                 "followup_days": result.get("followup_days", 5),
                 "rationale": result.get("rationale", ""),
+                "pain_points": result.get("pain_points", []),
             }
         except Exception as exc:
             logger.error("Failed to parse Anthropic response: %s — raw: %s", exc, data)
-            return {"subject": "", "body": "", "followup_days": 5, "rationale": ""}
+            return {"subject": "", "body": "", "followup_days": 5, "rationale": "", "pain_points": []}

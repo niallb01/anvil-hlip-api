@@ -117,6 +117,10 @@ async def _pipeline(
     confidence = signal_evidence.get("confidence", 0.0)
 
     # e. Generate outreach (skip if score too low)
+    verified_signals = signal_evidence.get("verified", [])
+    weak_signals = signal_evidence.get("weak", [])
+    missing_signals = signal_evidence.get("missing", [])
+
     if scored.lead_score >= 40:
         anthropic = AnthropicClient()
         outreach = await anthropic.generate_outreach(
@@ -127,11 +131,15 @@ async def _pipeline(
             website_url=website_url,
             website_content=website_content,
             scrape_quality=scrape_quality,
-            pain_points=scored.pain_points,
-            rationale=scored.rationale,
+            lead_score=scored.lead_score,
+            decision_maker=scored.decision_maker,
+            budget_likelihood=scored.budget_likelihood,
+            verified_signals=verified_signals,
+            weak_signals=weak_signals,
+            missing_signals=missing_signals,
         )
     else:
-        outreach = {"subject": "", "body": "", "followup_days": 0, "rationale": ""}
+        outreach = {"subject": "", "body": "", "followup_days": 0, "rationale": "", "pain_points": []}
         logger.info("Outreach skipped: lead_score=%d below threshold for contact_id=%s", scored.lead_score, contact_id)
 
     # f. Build sherlock_signal
@@ -206,7 +214,7 @@ async def _pipeline(
         scored.decision_maker_seniority,
         scored.budget_likelihood_score,
         scored.growth_signals,
-        ", ".join(scored.pain_points) if scored.pain_points else "",
+        ", ".join(outreach.get("pain_points", [])),
         scored.budget_likelihood,
         scored.decision_maker,
         scored.rationale,
