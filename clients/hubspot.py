@@ -211,14 +211,13 @@ class HubSpotClient:
         )
 
         briefing = (
-            f"Contact: {first_name} {last_name} | {job_title} at {company}<br><br>"
-            f"Score: {lead_score}/100<br>"
-            f"Budget likelihood: {budget_likelihood.capitalize()}<br>"
-            f"Decision maker: {dm}<br>"
-            f"Confidence: {confidence_pct}%<br><br>"
-            # f"{rationale.replace('. ', '.<br>')}<br>"
+            f"Contact: {first_name} {last_name} | {job_title} at {company}\n\n"
+            f"Score: {lead_score}/100\n"
+            f"Budget likelihood: {budget_likelihood.capitalize()}\n"
+            f"Decision maker: {dm}\n"
+            f"Confidence: {confidence_pct}%\n\n"
             f"{rationale}\n\n"
-            f"{outreach_line}<br><br>"
+            f"{outreach_line}"
         )
 
         await self.create_note(contact_id, access_token, briefing)
