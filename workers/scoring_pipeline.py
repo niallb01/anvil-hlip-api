@@ -204,7 +204,7 @@ async def _pipeline(
         ", ".join(scored.pain_points) if scored.pain_points else "",
         scored.budget_likelihood,
         scored.decision_maker,
-        outreach["rationale"],
+        scored.rationale,
         json.dumps(signal_evidence),
         scrape_quality,
         confidence,
