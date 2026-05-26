@@ -216,7 +216,8 @@ class HubSpotClient:
             f"Budget likelihood: {budget_likelihood.capitalize()}<br>"
             f"Decision maker: {dm}<br>"
             f"Confidence: {confidence_pct}%<br><br>"
-            f"Intel: {rationale}<br><br>"
+            # f"Intel: {rationale}<br><br>"
+            f"Intel:<br>" + "".join(f"{s.strip()}<br>" for s in rationale.split(". ") if s.strip()) + "<br>"
             f"{outreach_line}<br><br>"
         )
 
