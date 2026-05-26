@@ -120,6 +120,7 @@ async def _pipeline(
     anthropic = AnthropicClient()
     outreach = await anthropic.generate_outreach(
         first_name=first_name,
+        last_name=last_name,
         job_title=job_title,
         company=company,
         website_content=website_content,

@@ -16,6 +16,7 @@ class AnthropicClient:
     async def generate_outreach(
         self,
         first_name: str,
+        last_name: str,
         job_title: str,
         company: str,
         website_content: str,
@@ -29,7 +30,9 @@ class AnthropicClient:
             logger.exception("Failed to load prompt template")
             return {"subject": "", "body": "", "followup_days": 5, "rationale": ""}
 
+        name = f"{first_name} {last_name}".strip()
         prompt = template.format(
+            name=name,
             first_name=first_name,
             job_title=job_title,
             company=company,
