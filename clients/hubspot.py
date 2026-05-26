@@ -216,7 +216,8 @@ class HubSpotClient:
             f"Budget likelihood: {budget_likelihood.capitalize()}<br>"
             f"Decision maker: {dm}<br>"
             f"Confidence: {confidence_pct}%<br><br>"
-            f"Intel:<br><br>{rationale.replace('. ', '.<br>')}<br>"
+            # f"{rationale.replace('. ', '.<br>')}<br>"
+            f"{rationale}\n\n"
             f"{outreach_line}<br><br>"
         )
 
