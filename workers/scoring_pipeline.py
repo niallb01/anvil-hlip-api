@@ -94,12 +94,18 @@ async def _pipeline(
     if not access_token:
         raise RuntimeError(f"No HubSpot access token for portal_id={portal_id}")
 
-    # c. Scrape website
+    # c. Scrape website — fallback to email domain if no website URL
     firecrawl = FirecrawlClient()
+    effective_url = website_url
+    if not effective_url and email and "@" in email:
+        domain = email.split("@")[1]
+        effective_url = f"https://{domain}"
+        logger.info("No website URL — falling back to email domain: %s", effective_url)
+
     scrape_result = (
-        await firecrawl.scrape_lead(website_url)
-        if website_url
-        else {"content": "", "url": website_url, "thin": True}
+        await firecrawl.scrape_lead(effective_url)
+        if effective_url
+        else {"content": "", "url": "", "thin": True}
     )
     website_content = scrape_result["content"]
     scrape_quality = "thin" if scrape_result["thin"] else "good"
