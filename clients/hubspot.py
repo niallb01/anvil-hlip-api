@@ -80,7 +80,7 @@ class HubSpotClient:
         payload = {
             "properties": {
                 "hs_email_subject": subject,
-                "hs_email_html": f"Subject: {subject}<br><br>" + body.replace("\n", "<br>"),
+                "hs_email_html": f"Subject: {subject}<br><br>" + body.replace("\n", "<br><br>"),
                 "hs_email_direction": "EMAIL",
                 "hs_email_status": "DRAFT",
                 "hs_timestamp": timestamp_ms,
@@ -204,17 +204,26 @@ class HubSpotClient:
         dm = "Yes" if decision_maker else "No"
         confidence_pct = round(confidence * 100, 1)
 
+        outreach_line = (
+            "Outreach: Draft generated."
+            if draft_subject
+            else "Outreach: Not generated — below ICP threshold."
+        )
+
         briefing = (
-    f"🎯 Anvil HLIP Briefing\n\n"
-    f"Contact: {first_name} {last_name} | {job_title} at {company}\n\n"
-    f"Score: {lead_score}/100\n"
-    f"Budget likelihood: {budget_likelihood.capitalize()}\n"
-    f"Decision maker: {dm}\n"
- f"Confidence: {confidence_pct}%\n"
+            f"Anvil HLIP Briefing<br><br>"
+            f"Contact: {first_name} {last_name} | {job_title} at {company}<br><br>"
+            f"Score: {lead_score}/100<br>"
+            f"Budget likelihood: {budget_likelihood.capitalize()}<br>"
+            f"Decision maker: {dm}<br>"
+            f"Confidence: {confidence_pct}%<br><br>"
+            f"Intel: {rationale}<br><br>"
+            f"{outreach_line}<br><br>"
         )
 
         await self.create_note(contact_id, access_token, briefing)
-        await self.create_email_draft(contact_id, access_token, draft_subject, draft_body)
+        if draft_subject and draft_body:
+            await self.create_email_draft(contact_id, access_token, draft_subject, draft_body)
 
     async def get_access_token(
         self,
