@@ -44,3 +44,5 @@ DO:
 
 Respond with ONLY valid JSON, no markdown, no backticks:
 {{"subject": "", "body": "", "followup_days": 0, "rationale": ""}}
+
+CRITICAL: The body field contains ONLY the email text. The rationale field is internal notes only and must NEVER appear in the body field.
