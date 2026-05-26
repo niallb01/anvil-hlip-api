@@ -33,6 +33,40 @@ class ScoredOutput:
     signal_evidence: dict = field(default_factory=dict)
 
 
+def _build_output(data: dict) -> ScoredOutput:
+    industry_fit = data.get("industry_fit", 0)
+    company_size_fit = data.get("company_size_fit", 0)
+    decision_maker_seniority = data.get("decision_maker_seniority", 0)
+    budget_likelihood_score = data.get("budget_likelihood_score", 0)
+    growth_signals = data.get("growth_signals", 0)
+
+    lead_score = min(100, industry_fit + company_size_fit + decision_maker_seniority + budget_likelihood_score + growth_signals)
+
+    raw_likelihood = data.get("budget_likelihood", "")
+    if raw_likelihood in ("high", "medium", "low"):
+        budget_likelihood = raw_likelihood
+    elif budget_likelihood_score >= 15:
+        budget_likelihood = "high"
+    elif budget_likelihood_score >= 8:
+        budget_likelihood = "medium"
+    else:
+        budget_likelihood = "low"
+
+    return ScoredOutput(
+        lead_score=lead_score,
+        industry_fit=industry_fit,
+        company_size_fit=company_size_fit,
+        decision_maker_seniority=decision_maker_seniority,
+        budget_likelihood_score=budget_likelihood_score,
+        growth_signals=growth_signals,
+        pain_points=data.get("pain_points", []),
+        budget_likelihood=budget_likelihood,
+        decision_maker=data.get("decision_maker", False),
+        rationale=data.get("rationale", ""),
+        signal_evidence=data.get("signal_evidence", {}),
+    )
+
+
 class ScorerClient:
 
     async def score(self, input: ScrapedInput) -> ScoredOutput:
@@ -45,19 +79,18 @@ class ScorerClient:
             logger.error("Anvil Scout scoring error: %s", data["error"])
             raise ValueError(f"Scoring failed: {data['error']}")
 
-        return ScoredOutput(
-            lead_score=data.get("lead_score", 0),
-            industry_fit=data.get("industry_fit", 0),
-            company_size_fit=data.get("company_size_fit", 0),
-            decision_maker_seniority=data.get("decision_maker_seniority", 0),
-            budget_likelihood_score=data.get("budget_likelihood_score", 0),
-            growth_signals=data.get("growth_signals", 0),
-            pain_points=data.get("pain_points", []),
-            budget_likelihood=data.get("budget_likelihood", "low"),
-            decision_maker=data.get("decision_maker", False),
-            rationale=data.get("rationale", ""),
-            signal_evidence=data.get("signal_evidence", {}),
+        output = _build_output(data)
+        logger.info(
+            "Scoring complete: lead_score=%d industry_fit=%d company_size_fit=%d "
+            "decision_maker_seniority=%d budget_likelihood_score=%d growth_signals=%d",
+            output.lead_score,
+            output.industry_fit,
+            output.company_size_fit,
+            output.decision_maker_seniority,
+            output.budget_likelihood_score,
+            output.growth_signals,
         )
+        return output
 
     async def ingest_outcome(
         self,
