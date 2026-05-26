@@ -19,6 +19,7 @@ class AnthropicClient:
         last_name: str,
         job_title: str,
         company: str,
+        website_url: str,
         website_content: str,
         scrape_quality: str,
         pain_points: list[str],
@@ -36,6 +37,7 @@ class AnthropicClient:
             first_name=first_name,
             job_title=job_title,
             company=company,
+            website_url=website_url,
             website_content=website_content,
             scrape_quality=scrape_quality,
             pain_points=", ".join(pain_points) if pain_points else "none identified",
@@ -43,7 +45,7 @@ class AnthropicClient:
         )
 
         payload = {
-            "model": "claude-haiku-4-5-20251001",
+            "model": "claude-sonnet-4-20250514",
             "max_tokens": 1000,
             "temperature": 0,
             "messages": [{"role": "user", "content": prompt}],

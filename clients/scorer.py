@@ -135,7 +135,7 @@ Return ONLY valid JSON. No markdown, no backticks, no preamble.
   "pain_points": ["string", "string", "string"],
   "budget_likelihood": "high | medium | low",
   "decision_maker": true | false,
-  "rationale": "Plain English explanation for a sales rep. 2-3 sentences. What does the company do, why is this contact relevant, what signals suggest they have the problem we solve. No technical jargon.",
+  "rationale": "3 sentences exactly. Sentence 1: what the company does and who they sell to. Sentence 2: why this specific contact owns the sales research problem — reference their title and company stage. Sentence 3: the single strongest verified signal from the website that suggests they have the problem we solve — must be specific and observable, not inferred. Write for a sales rep about to make a call. Never reference the email or outreach. No technical jargon. No corporate language.",
   "signal_evidence": {{
     "verified": ["string"],
     "weak": ["string"],

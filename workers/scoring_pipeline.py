@@ -123,6 +123,7 @@ async def _pipeline(
         last_name=last_name,
         job_title=job_title,
         company=company,
+        website_url=website_url,
         website_content=website_content,
         scrape_quality=scrape_quality,
         pain_points=scored.pain_points,
