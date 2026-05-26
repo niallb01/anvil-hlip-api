@@ -116,19 +116,23 @@ async def _pipeline(
     signal_evidence = scored.signal_evidence if isinstance(scored.signal_evidence, dict) else {}
     confidence = signal_evidence.get("confidence", 0.0)
 
-    # e. Generate outreach
-    anthropic = AnthropicClient()
-    outreach = await anthropic.generate_outreach(
-        first_name=first_name,
-        last_name=last_name,
-        job_title=job_title,
-        company=company,
-        website_url=website_url,
-        website_content=website_content,
-        scrape_quality=scrape_quality,
-        pain_points=scored.pain_points,
-        rationale=scored.rationale,
-    )
+    # e. Generate outreach (skip if score too low)
+    if scored.lead_score >= 40:
+        anthropic = AnthropicClient()
+        outreach = await anthropic.generate_outreach(
+            first_name=first_name,
+            last_name=last_name,
+            job_title=job_title,
+            company=company,
+            website_url=website_url,
+            website_content=website_content,
+            scrape_quality=scrape_quality,
+            pain_points=scored.pain_points,
+            rationale=scored.rationale,
+        )
+    else:
+        outreach = {"subject": "", "body": "", "followup_days": 0, "rationale": ""}
+        logger.info("Outreach skipped: lead_score=%d below threshold for contact_id=%s", scored.lead_score, contact_id)
 
     # f. Build sherlock_signal
     sherlock_signal = {
