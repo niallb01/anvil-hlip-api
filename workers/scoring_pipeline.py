@@ -97,7 +97,7 @@ async def _pipeline(
     # c. Scrape website
     firecrawl = FirecrawlClient()
     scrape_result = (
-        await firecrawl.scrape(website_url)
+        await firecrawl.scrape_lead(website_url)
         if website_url
         else {"content": "", "url": website_url, "thin": True}
     )
