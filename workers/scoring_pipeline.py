@@ -111,6 +111,16 @@ async def _pipeline(
     scrape_quality = "thin" if scrape_result["thin"] else "good"
 
     # d. Score
+    # scorer = ScorerClient()
+    # scored = await scorer.score(ScrapedInput(
+    #     name=full_name,
+    #     website_url=website_url,
+    #     website_content=website_content,
+    #     title=job_title,
+    #     company=company,
+    # ))
+
+    # d. Score
     scorer = ScorerClient()
     scored = await scorer.score(ScrapedInput(
         name=full_name,
@@ -118,7 +128,8 @@ async def _pipeline(
         website_content=website_content,
         title=job_title,
         company=company,
-    ))
+    ), enrichment=enrichment)
+    
     signal_evidence = scored.signal_evidence if isinstance(scored.signal_evidence, dict) else {}
     confidence = signal_evidence.get("confidence", 0.0)
 

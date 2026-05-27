@@ -75,7 +75,23 @@ def _build_output(data: dict) -> ScoredOutput:
 
 class ScorerClient:
 
-    async def score(self, input: ScrapedInput) -> ScoredOutput:
+    async def score(self, input: ScrapedInput, enrichment: dict | None = None) -> ScoredOutput:
+        from anvil_scout.core.enrichment import EnrichmentResult, set_provider
+
+        if enrichment and enrichment.get("available"):
+            class _ApolloProvider:
+                def fetch(self, company: str, website_url: str) -> EnrichmentResult:
+                    return EnrichmentResult(
+                        available=True,
+                        employee_count=enrichment.get("employee_count"),
+                        funding_stage=enrichment.get("funding_stage"),
+                        industry_class=enrichment.get("industry_class"),
+                        decision_maker_confirmed=enrichment.get("decision_maker_confirmed"),
+                    )
+            set_provider(_ApolloProvider())
+            logger.info("Scout enrichment provider set: employees=%s industry=%s",
+                enrichment.get("employee_count"), enrichment.get("industry_class"))
+
         raw_in = json.dumps({
             "name": input.name,
             "title": input.title,

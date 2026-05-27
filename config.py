@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     RESEND_API_KEY: str = ""
     ANVIL_API_KEY: str = ""
     RENDER_URL: str = ""
+    APOLLO_API_KEY: str = ""
 
     model_config = {"env_file": ".env"}
 
