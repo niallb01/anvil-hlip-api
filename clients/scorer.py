@@ -39,12 +39,24 @@ class ScoredOutput:
     signal_evidence: dict = field(default_factory=dict)
 
 
-def _build_output(data: dict) -> ScoredOutput:
+def _build_output(data: dict, enrichment: dict | None = None) -> ScoredOutput:
     industry_fit = data.get("industry_fit", 0)
     company_size_fit = data.get("company_size_fit", 0)
     decision_maker_seniority = data.get("decision_maker_seniority", 0)
     budget_likelihood_score = data.get("budget_likelihood_score", 0)
     growth_signals = data.get("growth_signals", 0)
+
+    # Override company_size_fit with Apollo employee count if available
+    if enrichment and enrichment.get("available") and enrichment.get("employee_count"):
+        emp = enrichment["employee_count"]
+        if 20 <= emp <= 200:
+            company_size_fit = 25
+        elif 201 <= emp <= 500:
+            company_size_fit = 15
+        elif emp < 20:
+            company_size_fit = 8
+        else:
+            company_size_fit = 8
 
     lead_score = min(100, industry_fit + company_size_fit + decision_maker_seniority + budget_likelihood_score + growth_signals)
 
@@ -92,6 +104,8 @@ class ScorerClient:
             logger.info("Scout enrichment provider set: employees=%s industry=%s",
                 enrichment.get("employee_count"), enrichment.get("industry_class"))
 
+        self._current_enrichment = enrichment
+
         raw_in = json.dumps({
             "name": input.name,
             "title": input.title,
@@ -113,7 +127,7 @@ class ScorerClient:
             logger.error("Engine returned error: %s", data["error"])
             raise ValueError(f"Engine error: {data['error']}")
 
-        output = _build_output(data)
+        output = _build_output(data, enrichment=self._current_enrichment)
         logger.info(
             "Engine scoring complete: lead_score=%d (industry=%d size=%d role=%d budget=%d growth=%d)",
             output.lead_score,
