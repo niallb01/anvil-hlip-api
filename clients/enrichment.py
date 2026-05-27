@@ -34,9 +34,8 @@ class ApolloEnrichmentClient:
                         "accept": "application/json",
                         "Cache-Control": "no-cache",
                         "Content-Type": "application/json",
-                        "x-api-key": settings.APOLLO_API_KEY,
                     },
-                    params={"domain": domain},
+                    params={"domain": domain, "api_key": settings.APOLLO_API_KEY},
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -77,13 +76,13 @@ class ApolloEnrichmentClient:
                         "accept": "application/json",
                         "Cache-Control": "no-cache",
                         "Content-Type": "application/json",
-                        "x-api-key": settings.APOLLO_API_KEY,
                     },
                     json={
                         "first_name": first_name,
                         "last_name": last_name,
                         "email": email,
                         "domain": domain,
+                        "api_key": settings.APOLLO_API_KEY,
                     },
                 )
                 response.raise_for_status()
