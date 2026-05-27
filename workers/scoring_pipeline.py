@@ -110,17 +110,23 @@ async def _pipeline(
     website_content = scrape_result["content"]
     scrape_quality = "thin" if scrape_result["thin"] else "good"
 
-    # d. Score
-    # scorer = ScorerClient()
-    # scored = await scorer.score(ScrapedInput(
-    #     name=full_name,
-    #     website_url=website_url,
-    #     website_content=website_content,
-    #     title=job_title,
-    #     company=company,
-    # ))
+    # d. Enrich
+    from clients.enrichment import ApolloEnrichmentClient, build_enrichment_result
+    apollo = ApolloEnrichmentClient()
+    org_data, person_data = await asyncio.gather(
+        apollo.enrich_organisation(effective_url),
+        apollo.enrich_person(first_name, last_name, email, effective_url),
+    )
+    enrichment = build_enrichment_result(org_data, person_data)
+    logger.info(
+        "Enrichment: available=%s employees=%s seniority=%s tech_stack=%s",
+        enrichment["available"],
+        enrichment["employee_count"],
+        enrichment["seniority"],
+        enrichment["tech_stack"][:3] if enrichment["tech_stack"] else [],
+    )
 
-    # d. Score
+    # e. Score
     scorer = ScorerClient()
     scored = await scorer.score(ScrapedInput(
         name=full_name,
