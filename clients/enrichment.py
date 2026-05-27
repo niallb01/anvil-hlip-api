@@ -134,8 +134,10 @@ def build_enrichment_result(org: dict, person: dict) -> dict:
         "c_suite", "vp", "director", "head", "owner", "founder", "partner"
     )
 
+    raw_tech = org.get("technology_names") or []
     tech_stack = [
-        t.get("name", "") for t in (org.get("technology_names") or [])
+        t.get("name", "") if isinstance(t, dict) else str(t)
+        for t in raw_tech
     ]
 
     return {

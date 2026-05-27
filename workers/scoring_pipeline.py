@@ -113,11 +113,8 @@ async def _pipeline(
     # d. Enrich
     from clients.enrichment import ApolloEnrichmentClient, build_enrichment_result
     apollo = ApolloEnrichmentClient()
-    org_data, person_data = await asyncio.gather(
-        apollo.enrich_organisation(effective_url),
-        apollo.enrich_person(first_name, last_name, email, effective_url),
-    )
-    enrichment = build_enrichment_result(org_data, person_data)
+    org_data = await apollo.enrich_organisation(effective_url)
+    enrichment = build_enrichment_result(org_data, {})
     logger.info(
         "Enrichment: available=%s employees=%s seniority=%s tech_stack=%s",
         enrichment["available"],
