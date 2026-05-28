@@ -166,7 +166,7 @@ async def _pipeline(
     sherlock_signal = {
         "schema_version": "v1",
         "product": "hlip",
-        "confidence": confidence,
+        "signal_density": confidence,
         "signals": {
             "lead_score": scored.lead_score,
             "industry_fit": scored.industry_fit,
