@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from db.migrations import run_migrations
+from routers.icp import router as icp_router
 from routers.v1 import router as v1_router
 
 
@@ -19,3 +20,4 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 app.include_router(v1_router, prefix="/api/v1")
+app.include_router(icp_router, prefix="/api/v1")
