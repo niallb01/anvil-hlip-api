@@ -9,6 +9,7 @@ import asyncpg
 from celery import Celery
 
 from clients.anthropic import AnthropicClient
+from clients.daedalus import store_daedalus_episode
 from clients.firecrawl import FirecrawlClient
 from clients.hubspot import HubSpotClient
 from clients.scorer import ScrapedInput, ScorerClient
@@ -136,6 +137,39 @@ async def _pipeline(
     signal_evidence = scored.signal_evidence if isinstance(scored.signal_evidence, dict) else {}
     confidence = signal_evidence.get("signal_density", 0.0)
 
+    # Generate opaque lead_id for Daedalus
+    import sys, os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "engine"))
+    from anvil_scout.daedalus.predictive import opaque_lead_id
+    from anvil_scout.contracts import ScrapedInput as _ScrapedInput
+    daedalus_lead_id = opaque_lead_id(_ScrapedInput(
+        name=full_name,
+        title=job_title,
+        company=company,
+        website_url=effective_url,
+        website_content=website_content,
+    ))
+
+    # Store Daedalus episode
+    scored_payload = {
+        "lead_score": scored.lead_score,
+        "industry_fit": scored.industry_fit,
+        "company_size_fit": scored.company_size_fit,
+        "decision_maker_seniority": scored.decision_maker_seniority,
+        "budget_likelihood_score": scored.budget_likelihood_score,
+        "growth_signals": scored.growth_signals,
+        "decision_maker": scored.decision_maker,
+        "predicted_quality": scored.predicted_quality,
+        "signal_evidence": signal_evidence,
+    }
+    await store_daedalus_episode(
+        conn=conn,
+        portal_id=portal_id,
+        lead_id=daedalus_lead_id,
+        scored_payload=scored_payload,
+        text_chars=len(website_content),
+    )
+
     # e. Generate outreach (skip if score too low)
     verified_signals = signal_evidence.get("verified", [])
     weak_signals = signal_evidence.get("weak", [])
@@ -190,7 +224,7 @@ async def _pipeline(
             budget_likelihood_ai, decision_maker_ai, rationale_ai,
             signal_evidence, scrape_quality, confidence_at_emission,
             draft_subject, draft_body, draft_created_at,
-            sherlock_signal, predicted_quality
+            sherlock_signal, predicted_quality, daedalus_lead_id
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8,
             $9, $10, $11, $12,
@@ -198,7 +232,7 @@ async def _pipeline(
             $16, $17, $18,
             $19, $20, $21,
             $22, $23, NOW(),
-            $24, $25
+            $24, $25, $26
         )
         ON CONFLICT (contact_id) DO UPDATE SET
             lead_score_ai = EXCLUDED.lead_score_ai,
@@ -219,6 +253,7 @@ async def _pipeline(
             draft_created_at = EXCLUDED.draft_created_at,
             sherlock_signal = EXCLUDED.sherlock_signal,
             predicted_quality = EXCLUDED.predicted_quality,
+            daedalus_lead_id = EXCLUDED.daedalus_lead_id,
             scored_at = NOW()
         """,
         str(contact_id),
@@ -246,6 +281,7 @@ async def _pipeline(
         outreach["body"],
         json.dumps(sherlock_signal),
         scored.predicted_quality,
+        daedalus_lead_id,
     )
 
     logger.info("Lead persisted: contact_id=%s lead_score=%s", contact_id, scored.lead_score)

@@ -7,6 +7,7 @@ import time
 import asyncpg
 from fastapi import APIRouter, HTTPException, Request
 
+from clients.daedalus import submit_daedalus_outcome
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -127,6 +128,30 @@ async def update_outcome(contact_id: str, body: dict, request: Request):
             status,
         )
         logger.info("Outcome updated: contact_id=%s %s -> %s", contact_id, previous, status)
+
+        # Submit to Daedalus if outcome is terminal or nurture
+        if status in {"won", "lost", "nurture"}:
+            lead_id = row.get("daedalus_lead_id")
+            if lead_id:
+                await submit_daedalus_outcome(
+                    conn=conn,
+                    portal_id=row["portal_id"],
+                    lead_id=lead_id,
+                    label=status,
+                )
+                await conn.execute(
+                    """
+                    UPDATE outcome_events
+                    SET daedalus_submitted = true
+                    WHERE contact_id = $1
+                    AND new_status = $2
+                    AND daedalus_submitted = false
+                    """,
+                    contact_id,
+                    status,
+                )
+            else:
+                logger.warning("No daedalus_lead_id for contact_id=%s — skipping Daedalus submission", contact_id)
     finally:
         await conn.close()
 
