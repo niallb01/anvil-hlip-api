@@ -28,6 +28,8 @@ class AnthropicClient:
         verified_signals: list[str],
         weak_signals: list[str],
         missing_signals: list[str],
+        product_description: str = "",
+        target_seniority: str = "",
     ) -> dict:
         try:
             template = _PROMPT_PATH.read_text(encoding="utf-8")
@@ -50,6 +52,8 @@ class AnthropicClient:
             verified_signals="\n".join(f"- {s}" for s in verified_signals) if verified_signals else "None identified",
             weak_signals="\n".join(f"- {s}" for s in weak_signals) if weak_signals else "None identified",
             missing_signals="\n".join(f"- {s}" for s in missing_signals) if missing_signals else "None identified",
+            product_description=product_description or "An AI-powered lead qualification and sales research tool",
+            target_seniority=target_seniority or "VP Sales, Director, Head of Sales, CRO",
         )
 
         payload = {

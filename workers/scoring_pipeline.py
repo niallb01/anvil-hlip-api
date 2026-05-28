@@ -15,6 +15,7 @@ from clients.hubspot import HubSpotClient
 from clients.scorer import ScrapedInput, ScorerClient
 from clients.slack import SlackClient
 from config import settings
+from routers.icp import get_icp_config
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,9 @@ async def _pipeline(
     if not access_token:
         raise RuntimeError(f"No HubSpot access token for portal_id={portal_id}")
 
+    # b2. Fetch ICP config for this portal
+    icp = await get_icp_config(portal_id)
+
     # c. Scrape website — fallback to email domain if no website URL
     firecrawl = FirecrawlClient()
     effective_url = website_url
@@ -132,7 +136,7 @@ async def _pipeline(
         website_content=website_content,
         title=job_title,
         company=company,
-    ), enrichment=enrichment)
+    ), enrichment=enrichment, icp=icp)
     
     signal_evidence = scored.signal_evidence if isinstance(scored.signal_evidence, dict) else {}
     confidence = signal_evidence.get("signal_density", 0.0)
@@ -175,7 +179,7 @@ async def _pipeline(
     weak_signals = signal_evidence.get("weak", [])
     missing_signals = signal_evidence.get("missing", [])
 
-    if scored.lead_score >= 40:
+    if scored.lead_score >= icp.get("score_threshold", 40):
         anthropic = AnthropicClient()
         outreach = await anthropic.generate_outreach(
             first_name=first_name,
@@ -191,6 +195,8 @@ async def _pipeline(
             verified_signals=verified_signals,
             weak_signals=weak_signals,
             missing_signals=missing_signals,
+            product_description=icp.get("product_description", ""),
+            target_seniority=icp.get("target_seniority", ""),
         )
     else:
         outreach = {"subject": "", "body": "", "followup_days": 0, "rationale": "", "pain_points": []}

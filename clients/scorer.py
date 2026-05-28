@@ -40,7 +40,7 @@ class ScoredOutput:
     predicted_quality: float = 0.5
 
 
-def _build_output(data: dict, enrichment: dict | None = None) -> ScoredOutput:
+def _build_output(data: dict, enrichment: dict | None = None, icp: dict | None = None) -> ScoredOutput:
     industry_fit = data.get("industry_fit", 0)
     company_size_fit = data.get("company_size_fit", 0)
     decision_maker_seniority = data.get("decision_maker_seniority", 0)
@@ -50,11 +50,13 @@ def _build_output(data: dict, enrichment: dict | None = None) -> ScoredOutput:
     # Override company_size_fit with Apollo employee count if available
     if enrichment and enrichment.get("available") and enrichment.get("employee_count"):
         emp = enrichment["employee_count"]
-        if 20 <= emp <= 200:
+        emp_min = (icp or {}).get("target_employee_min", 20)
+        emp_max = (icp or {}).get("target_employee_max", 200)
+        if emp_min <= emp <= emp_max:
             company_size_fit = 25
-        elif 201 <= emp <= 500:
+        elif emp_max < emp <= emp_max * 2.5:
             company_size_fit = 15
-        elif emp < 20:
+        elif emp < emp_min:
             company_size_fit = 8
         else:
             company_size_fit = 8
@@ -89,7 +91,7 @@ def _build_output(data: dict, enrichment: dict | None = None) -> ScoredOutput:
 
 class ScorerClient:
 
-    async def score(self, input: ScrapedInput, enrichment: dict | None = None) -> ScoredOutput:
+    async def score(self, input: ScrapedInput, enrichment: dict | None = None, icp: dict | None = None) -> ScoredOutput:
         from anvil_scout.core.enrichment import EnrichmentResult, set_provider
 
         if enrichment and enrichment.get("available"):
@@ -107,6 +109,7 @@ class ScorerClient:
                 enrichment.get("employee_count"), enrichment.get("industry_class"))
 
         self._current_enrichment = enrichment
+        self._current_icp = icp
 
         raw_in = json.dumps({
             "name": input.name,
@@ -129,7 +132,7 @@ class ScorerClient:
             logger.error("Engine returned error: %s", data["error"])
             raise ValueError(f"Engine error: {data['error']}")
 
-        output = _build_output(data, enrichment=self._current_enrichment)
+        output = _build_output(data, enrichment=self._current_enrichment, icp=self._current_icp)
         logger.info(
             "Engine scoring complete: lead_score=%d (industry=%d size=%d role=%d budget=%d growth=%d)",
             output.lead_score,

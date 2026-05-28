@@ -14,6 +14,12 @@ Decision Maker: {decision_maker}
 Budget Likelihood: {budget_likelihood}
 Scrape Quality: {scrape_quality}
 
+PRODUCT CONTEXT (what the sender sells):
+{product_description}
+
+TARGET PROFILE (ideal contacts):
+{target_seniority}
+
 VERIFIED SIGNALS (proven facts from website):
 {verified_signals}
 
