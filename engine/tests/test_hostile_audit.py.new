@@ -1,0 +1,172 @@
+"""TB-09 — hostile audit tests.
+
+Six adversarial fixtures asserted with SPECIFIC behaviours (not just
+invariants). Each test pins a hardening claim:
+
+  - keyword stuffing must score ≤ real B2B page minus 30
+  - bot wall must register as thin_scrape
+  - paraphrase pair must score within ±10
+  - mixed script must not crash
+  - empty/whitespace must score 0
+"""
+
+import json
+import os
+import pytest
+
+from anvil_scout.cli import run_once
+from anvil_scout.core.enrichment import reset_provider
+from anvil_scout.core.schema_validator import validate_output
+
+
+HOSTILE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "hostile_fixtures",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider():
+    reset_provider()
+    yield
+    reset_provider()
+
+
+def _run(fixture_name: str) -> dict:
+    path = os.path.join(HOSTILE_DIR, fixture_name)
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+    return json.loads(run_once(raw))
+
+
+# ─── invariants across hostile fixtures (must always hold) ─────────────────
+
+ALL_HOSTILE = sorted(
+    f for f in os.listdir(HOSTILE_DIR)
+    if f.endswith(".json") and f[:2].isdigit()
+)
+
+
+@pytest.mark.parametrize("fixture", ALL_HOSTILE)
+def test_hostile_no_crash(fixture):
+    out = _run(fixture)
+    assert isinstance(out, dict)
+
+
+@pytest.mark.parametrize("fixture", ALL_HOSTILE)
+def test_hostile_schema_valid(fixture):
+    out = _run(fixture)
+    is_valid, errors = validate_output(out)
+    assert is_valid, f"{fixture}: {errors}"
+
+
+@pytest.mark.parametrize("fixture", ALL_HOSTILE)
+def test_hostile_no_annotation_tags(fixture):
+    out = _run(fixture)
+    assert "[Schema-violation:" not in out["rationale"]
+    assert "[Law-0:" not in out["rationale"]
+
+
+# ─── specific adversarial assertions ───────────────────────────────────────
+
+class TestKeywordStuffing:
+    """Stuffed page must score ≤ real B2B page minus 30 (JB-09-7)."""
+
+    def test_stuffed_scores_significantly_lower_than_real_b2b(self):
+        # Reference: a real B2B fixture from the E2E corpus
+        ref_path = os.path.join(
+            os.path.dirname(HOSTILE_DIR), "e2e_fixtures",
+            "01_b2b_saas_enterprise.json"
+        )
+        with open(ref_path, "r", encoding="utf-8") as f:
+            ref_raw = f.read()
+        ref = json.loads(run_once(ref_raw))
+        stuffed = _run("01_keyword_stuffing.json")
+
+        gap = ref["lead_score"] - stuffed["lead_score"]
+        assert gap >= 30, (
+            f"keyword-stuffed page should score at least 30 points below the "
+            f"real B2B reference. ref={ref['lead_score']} stuffed={stuffed['lead_score']} "
+            f"gap={gap}"
+        )
+
+
+class TestBotWall:
+    """Bot wall content < 500 chars → thin_scrape=true, data channels gate to 0."""
+
+    def test_bot_wall_triggers_thin_scrape(self):
+        out = _run("02_bot_wall.json")
+        assert out["signal_evidence"]["thin_scrape"] is True
+        assert out["signal_evidence"]["signal_density"] <= 0.2
+
+    def test_bot_wall_data_channels_zero(self):
+        """Law-II gates all data-derived channels to 0 on thin scrape."""
+        out = _run("02_bot_wall.json")
+        assert out["industry_fit"] == 0
+        assert out["company_size_fit"] == 0
+        assert out["budget_likelihood_score"] == 0
+        assert out["growth_signals"] == 0
+
+
+class TestParaphraseStability:
+    """Paraphrase pair must score within ±10 (JB-09-3)."""
+
+    def test_paraphrase_pair_within_tolerance(self):
+        baseline = _run("03_paraphrase_baseline.json")
+        variant = _run("04_paraphrase_variant.json")
+        delta = abs(baseline["lead_score"] - variant["lead_score"])
+        assert delta <= 10, (
+            f"paraphrase scores must be within ±10. "
+            f"baseline={baseline['lead_score']} variant={variant['lead_score']} "
+            f"delta={delta}"
+        )
+
+    def test_both_are_b2b_high_band(self):
+        """Sanity: both paraphrases should land in the HIGH band (>=50)."""
+        baseline = _run("03_paraphrase_baseline.json")
+        variant = _run("04_paraphrase_variant.json")
+        assert baseline["lead_score"] >= 50
+        assert variant["lead_score"] >= 50
+
+
+class TestMixedScript:
+    """Mixed Latin + Cyrillic + Chinese must not crash; output is valid JSON."""
+
+    def test_mixed_script_no_crash(self):
+        out = _run("05_mixed_script.json")
+        assert isinstance(out["lead_score"], int)
+        # Output is valid UTF-8 JSON serialisable with ensure_ascii=False
+        json.dumps(out, ensure_ascii=False)
+
+    def test_mixed_script_recognises_b2b_signals(self):
+        """The Latin portions still contain B2B markers — should score > 0."""
+        out = _run("05_mixed_script.json")
+        assert out["lead_score"] > 0
+
+
+class TestEmptyWhitespace:
+    """Pure whitespace → lead_score=0, all channels=0."""
+
+    def test_empty_whitespace_zero_score(self):
+        out = _run("06_empty_whitespace.json")
+        assert out["lead_score"] == 0
+        assert out["industry_fit"] == 0
+        assert out["company_size_fit"] == 0
+        assert out["decision_maker_seniority"] == 0
+        assert out["budget_likelihood_score"] == 0
+        assert out["growth_signals"] == 0
+
+    def test_empty_whitespace_pain_points_empty(self):
+        out = _run("06_empty_whitespace.json")
+        assert out["pain_points"] == []
+
+    def test_empty_whitespace_budget_low(self):
+        out = _run("06_empty_whitespace.json")
+        assert out["budget_likelihood"] == "low"
+        assert out["decision_maker"] is False
+
+
+class TestTotalFixtureCount:
+
+    def test_six_hostile_fixtures(self):
+        assert len(ALL_HOSTILE) == 6

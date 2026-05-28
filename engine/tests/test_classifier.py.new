@@ -1,0 +1,175 @@
+"""TB-03 — classifier tests."""
+
+import json
+import os
+
+from anvil_scout.core.detectors import Span, run_all_detectors
+from anvil_scout.core.classifier import classify_signals, compute_signal_density
+
+
+def _load_sample(name: str) -> str:
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data",
+        name,
+    )
+    with open(path, "r", encoding="utf-8") as f:
+        d = json.load(f)
+    return d["website_content"]
+
+
+# ─── rules ───────────────────────────────────────────────────────────────────
+
+class TestRules:
+
+    def test_quantity_always_verified(self):
+        spans = [
+            Span(0, 4, "$499", "quantity", "currency", 0.95),
+            Span(10, 14, "2019", "quantity", "year", 0.9),
+        ]
+        verified, weak, missing = classify_signals(spans)
+        assert len(verified) == 2
+        assert len(weak) == 0
+        assert len(missing) == 0
+
+    def test_missing_always_missing(self):
+        spans = [
+            Span(-1, -1, "", "missing", "pricing", 1.0),
+            Span(-1, -1, "", "missing", "hiring", 1.0),
+        ]
+        verified, weak, missing = classify_signals(spans)
+        assert len(verified) == 0
+        assert len(weak) == 0
+        assert len(missing) == 2
+
+    def test_testimony_alone_is_weak(self):
+        spans = [
+            Span(0, 30, "Acme is the leading platform.", "testimony", "claim_marker", 0.7),
+        ]
+        verified, weak, missing = classify_signals(spans)
+        assert len(verified) == 0
+        assert len(weak) == 1
+        assert "no supporting quantity" in weak[0]
+
+    def test_causal_alone_is_weak(self):
+        spans = [
+            Span(0, 30, "Our platform enables teams.", "causal", "connector", 0.7),
+        ]
+        verified, weak, missing = classify_signals(spans)
+        assert len(verified) == 0
+        assert len(weak) == 1
+
+    def test_testimony_with_overlapping_quantity_is_verified(self):
+        """Trusted by 200 customers — both spans cover the same range."""
+        spans = [
+            Span(0, 30, "Trusted by 200 customers here", "testimony", "social_proof", 0.8),
+            Span(11, 24, "200 customers", "quantity", "customer_count", 0.85),
+        ]
+        verified, weak, missing = classify_signals(spans)
+        # quantity always verified + testimony corroborated → 2 verified
+        assert len(verified) == 2
+        assert len(weak) == 0
+        assert any("corroborated by adjacent quantity" in v for v in verified)
+
+    def test_testimony_with_distant_quantity_stays_weak(self):
+        """Quantity at offset 200+ doesn't corroborate testimony at offset 0–30."""
+        spans = [
+            Span(0, 30, "Acme is the leading platform.", "testimony", "claim_marker", 0.7),
+            Span(200, 220, "founded in 2019", "quantity", "year", 0.9),
+        ]
+        verified, weak, missing = classify_signals(spans)
+        # quantity verified, testimony stays weak (no overlap)
+        assert len(verified) == 1
+        assert len(weak) == 1
+
+
+# ─── confidence ──────────────────────────────────────────────────────────────
+
+class TestConfidence:
+
+    def test_thin_scrape_floors_at_0_2(self):
+        # Even with 50 verified signals, thin scrape forces 0.2
+        assert compute_signal_density(thin_scrape=True, verified_count=50, weak_count=0, missing_count=0) == 0.2
+
+    def test_no_signals_returns_0_3(self):
+        assert compute_signal_density(thin_scrape=False, verified_count=0, weak_count=0, missing_count=0) == 0.3
+
+    def test_all_verified_caps_at_0_8(self):
+        c = compute_signal_density(thin_scrape=False, verified_count=10, weak_count=0, missing_count=0)
+        assert c == 0.8
+
+    def test_all_missing_low_confidence(self):
+        c = compute_signal_density(thin_scrape=False, verified_count=0, weak_count=0, missing_count=5)
+        # weighted = 0/5 = 0 → 0.2 + 0 = 0.2
+        assert c == 0.2
+
+    def test_mixed_signals_mid_range(self):
+        # 2 verified, 1 weak, 2 missing → weighted = (2 + 0.5)/5 = 0.5 → 0.2 + 0.3 = 0.5
+        c = compute_signal_density(thin_scrape=False, verified_count=2, weak_count=1, missing_count=2)
+        assert c == 0.5
+
+    def test_weak_counts_half_as_much_as_verified(self):
+        c_weak = compute_signal_density(thin_scrape=False, verified_count=0, weak_count=4, missing_count=0)
+        c_verified = compute_signal_density(thin_scrape=False, verified_count=4, weak_count=0, missing_count=0)
+        # weighted_weak = (0 + 0.5*4)/4 = 0.5 → 0.5
+        # weighted_verified = 4/4 = 1.0 → 0.8 (capped)
+        assert c_weak == 0.5
+        assert c_verified == 0.8
+
+    def test_confidence_is_bounded(self):
+        c = compute_signal_density(thin_scrape=False, verified_count=100, weak_count=100, missing_count=0)
+        assert 0.2 <= c <= 0.8
+
+
+# ─── determinism ─────────────────────────────────────────────────────────────
+
+class TestDeterminism:
+
+    def test_classifier_output_is_sorted(self):
+        spans = [
+            Span(0, 4, "$499", "quantity", "currency", 0.95),
+            Span(10, 14, "2019", "quantity", "year", 0.9),
+            Span(20, 30, "200 customers", "quantity", "customer_count", 0.85),
+        ]
+        verified, _, _ = classify_signals(spans)
+        assert verified == sorted(verified)
+
+    def test_classifier_output_dedups(self):
+        # Two identical spans should produce one descriptor
+        s1 = Span(0, 4, "$499", "quantity", "currency", 0.95)
+        s2 = Span(0, 4, "$499", "quantity", "currency", 0.95)
+        verified, _, _ = classify_signals([s1, s2])
+        assert len(verified) == 1
+
+
+# ─── integration over sample ────────────────────────────────────────────────
+
+class TestIntegration:
+
+    def test_full_sample_has_verified_and_no_missing(self):
+        text = _load_sample("sample_input.json")
+        spans = run_all_detectors(text)
+        verified, weak, missing = classify_signals(spans)
+
+        # Full sample has quantity hits → some VERIFIED
+        assert len(verified) > 0, f"expected verified entries, got verified={verified}"
+        # Full sample covers all 5 categories → no missing
+        assert len(missing) == 0
+
+    def test_thin_sample_mostly_missing(self):
+        text = _load_sample("sample_input_thin.json")
+        spans = run_all_detectors(text)
+        verified, weak, missing = classify_signals(spans)
+
+        # Thin sample has no quantity / testimony / causal hits
+        assert len(verified) == 0
+        # All 5 B2B categories absent
+        assert len(missing) == 5
+
+    def test_full_sample_trusted_by_200_corroborates(self):
+        """'Trusted by over 200 customers' — testimony + quantity overlap → verified."""
+        text = _load_sample("sample_input.json")
+        spans = run_all_detectors(text)
+        verified, _, _ = classify_signals(spans)
+        # At least one verified entry mentions corroboration
+        assert any("corroborated by adjacent quantity" in v for v in verified)

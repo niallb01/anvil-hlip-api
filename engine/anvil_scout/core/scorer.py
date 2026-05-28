@@ -47,6 +47,18 @@ from anvil_scout.core.context import (
 )
 
 
+# TB-18: enrichment-driven verification sets for industry_fit + growth_signals.
+# Conservative selection: only categories that unambiguously indicate the
+# relevant signal. Ambiguous values (seriesA, seed, bootstrapped, consumer)
+# do NOT trigger boosts — they aren't negative signals, just not verifications.
+_B2B_INDUSTRY_CLASSES = frozenset({
+    "saas", "services", "marketplace", "platform", "enterprise", "b2b",
+})
+_GROWTH_FUNDING_STAGES = frozenset({
+    "seriesB", "seriesC+", "ipo",
+})
+
+
 # ─── primitive ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -84,7 +96,7 @@ def _present(spans: List[Span], subtype: str) -> bool:
 
 # ─── channel scorers ────────────────────────────────────────────────────────
 
-def score_industry_fit(spans: List[Span], text: str = "") -> ChannelScore:
+def score_industry_fit(spans: List[Span], text: str = "", enrichment=None) -> ChannelScore:
     """B2B SaaS/tech orientation, from observable text signals only.
 
     TB-09 hardening:
@@ -93,6 +105,17 @@ def score_industry_fit(spans: List[Span], text: str = "") -> ChannelScore:
         subscription marker (otherwise it's likely consumer pricing)
       - social_proof only boosts the rubric if the page actually names B2B
         clients (not generic crowd language)
+
+    TB-18 enrichment integration:
+      - When enrichment provides industry_class in {saas, services,
+        marketplace, platform, enterprise, b2b}, it counts as one
+        additional piece of evidence — flowing through the existing
+        tier logic, naturally lifting rubric in the standard way.
+      - Non-commercial cap STILL APPLIES at 5 (a charity-page with
+        enrichment claiming "saas" is more likely a provider error
+        than a real signal).
+      - industry_class outside the B2B set has no effect (consumer/retail/
+        d2c don't reduce the score; they just don't verify B2B).
     """
     # TB-09: split currency into commercial vs bare; only commercial counts here.
     currency_spans = [s for s in spans if s.kind == "quantity" and s.subtype == "currency"]
@@ -114,26 +137,44 @@ def score_industry_fit(spans: List[Span], text: str = "") -> ChannelScore:
 
     evidence = saas_strong + b2b_signals + social_proof
 
+    # TB-18: enrichment-confirmed B2B industry class counts as one additional
+    # piece of evidence. Provider returns lowercase canonical forms per the
+    # EnrichmentResult docstring; we still .lower() defensively.
+    enrichment_b2b_verified = False
+    if enrichment is not None and getattr(enrichment, "available", False):
+        ic = getattr(enrichment, "industry_class", None)
+        if isinstance(ic, str) and ic.lower() in _B2B_INDUSTRY_CLASSES:
+            enrichment_b2b_verified = True
+            evidence += 1
+
     if saas_strong >= 2 and _present(spans, "product"):
         rubric = 20    # SaaS-strong: priced + enterprise feature + product page
     elif saas_strong >= 1 and (b2b_signals + social_proof) >= 1:
         rubric = 15    # B2B SaaS likely
     elif evidence >= 2:
-        rubric = 10    # B2B-leaning, mixed
+        rubric = 10    # B2B-leaning, mixed (TB-18: enrichment can push us here)
     elif evidence >= 1:
-        rubric = 5     # weak signal
+        rubric = 5     # weak signal (TB-18: enrichment alone lands here)
     else:
         rubric = 0
 
     # TB-09: non-commercial gate hard-caps industry_fit at 5
+    # (TB-18: this gate still applies even if enrichment claims "saas" —
+    # respect the strongest negative signal)
     if text and is_non_commercial(text):
         rubric = min(rubric, 5)
 
     return ChannelScore("industry_fit", rubric, evidence)
 
 
-def score_company_size_fit(spans: List[Span]) -> ChannelScore:
-    """Mid-market range (20-200 employees) — heuristic, not number-parsed."""
+def score_company_size_fit(spans: List[Span], enrichment=None) -> ChannelScore:
+    """Mid-market range (20-200 employees) — heuristic, not number-parsed.
+
+    TB-15: when enrichment is available and provides an in-range
+    employee_count, the rubric lifts to 25 (the previously-documented
+    ceiling). Out-of-range values, non-int values, and unavailable
+    enrichment all fall back to the existing TB-04 heuristic unchanged.
+    """
     headcount = _count(spans, "quantity", "headcount")
     customer_count = _count(spans, "quantity", "customer_count")
     hiring = _present(spans, "hiring")
@@ -141,6 +182,16 @@ def score_company_size_fit(spans: List[Span]) -> ChannelScore:
 
     evidence = headcount + customer_count + int(hiring) + int(team_about)
 
+    # TB-15: enrichment-confirmed in-range employee count → rubric 25
+    if enrichment is not None and getattr(enrichment, "available", False):
+        ec = getattr(enrichment, "employee_count", None)
+        if isinstance(ec, int) and 20 <= ec <= 200:
+            # Enrichment span itself counts as one piece of evidence so the
+            # Law-II multiplicative gate is satisfied even if website-derived
+            # evidence is otherwise sparse.
+            return ChannelScore("company_size_fit", 25, evidence + 1)
+
+    # Existing TB-04 heuristic (unchanged):
     # Note: hard 25 (confirmed 20-200) would require parsing the number out
     # of headcount spans. Deferred to TB-09. Until then ceiling is 18.
     if headcount >= 1 and customer_count >= 1:
@@ -166,26 +217,48 @@ _IC = ("engineer", "analyst", "specialist", "associate", "developer", "designer"
        "consultant", "researcher", "scientist")
 
 
-def score_decision_maker_seniority(title: str) -> ChannelScore:
-    """Parse the lead's title; seniority drives scoring per PDF rubric."""
+def score_decision_maker_seniority(title: str, enrichment=None) -> ChannelScore:
+    """Parse the lead's title; seniority drives scoring per PDF rubric.
+
+    TB-15: when enrichment confirms decision_maker_confirmed=True, the
+    rubric is upgraded to 20 if the title-derived score was lower. False
+    or None has no effect (we never downgrade from title). The enrichment
+    span itself counts as one piece of evidence in addition to the title.
+    """
     t = (title or "").lower().strip()
     if not t:
+        # No title at all — only an enrichment confirmation can lift here.
+        if enrichment is not None and getattr(enrichment, "available", False):
+            dm = getattr(enrichment, "decision_maker_confirmed", None)
+            if dm is True:
+                return ChannelScore("decision_maker_seniority", 20, 1)
         return ChannelScore("decision_maker_seniority", 0, 0)
 
-    # Order matters: highest seniority first (JB-04-3).
+    # Title-derived rubric (existing TB-04 logic, ordered highest→lowest)
     if any(kw in t for kw in _CSUITE):
-        return ChannelScore("decision_maker_seniority", 20, 1)
-    if any(kw in t for kw in _VPDIR):
-        return ChannelScore("decision_maker_seniority", 20, 1)
-    if any(kw in t for kw in _SENIOR):
-        return ChannelScore("decision_maker_seniority", 15, 1)
-    if any(kw in t for kw in _MANAGER):
-        return ChannelScore("decision_maker_seniority", 10, 1)
-    if any(kw in t for kw in _IC):
-        return ChannelScore("decision_maker_seniority", 5, 1)
+        rubric, ev = 20, 1
+    elif any(kw in t for kw in _VPDIR):
+        rubric, ev = 20, 1
+    elif any(kw in t for kw in _SENIOR):
+        rubric, ev = 15, 1
+    elif any(kw in t for kw in _MANAGER):
+        rubric, ev = 10, 1
+    elif any(kw in t for kw in _IC):
+        rubric, ev = 5, 1
+    else:
+        # Title given but no keyword match — minimal evidence, low score.
+        rubric, ev = 5, 1
 
-    # Title given but no keyword match — minimal evidence, low score.
-    return ChannelScore("decision_maker_seniority", 5, 1)
+    # TB-15: enrichment-confirmed decision-maker upgrades sub-20 rubric to 20.
+    # Confirmation never downgrades a title that already says C-suite/VP/Dir.
+    if enrichment is not None and getattr(enrichment, "available", False):
+        dm = getattr(enrichment, "decision_maker_confirmed", None)
+        if dm is True:
+            if rubric < 20:
+                rubric = 20
+            ev += 1   # enrichment span counts as an additional piece of evidence
+
+    return ChannelScore("decision_maker_seniority", rubric, ev)
 
 
 def score_budget_likelihood(
@@ -241,13 +314,30 @@ def score_budget_likelihood(
     return ChannelScore("budget_likelihood_score", rubric, evidence)
 
 
-def score_growth_signals(spans: List[Span]) -> ChannelScore:
-    """Cause-effect language + hiring + customer-count signals."""
+def score_growth_signals(spans: List[Span], enrichment=None) -> ChannelScore:
+    """Cause-effect language + hiring + customer-count signals.
+
+    TB-18 enrichment integration:
+      - When enrichment provides funding_stage in {seriesB, seriesC+, ipo},
+        it counts as one additional piece of evidence AND lifts rubric
+        by 5 (capped at 15).
+      - seriesA / seed / bootstrapped are NOT treated as growth signals —
+        too ambiguous (seriesA can mean very small early company,
+        bootstrapped can mean strong organic growth OR stagnation).
+    """
     causal = _count(spans, "causal")
     hiring = _present(spans, "hiring")
     customer_count = _count(spans, "quantity", "customer_count")
 
     evidence = causal + int(hiring) + customer_count
+
+    # TB-18: enrichment-confirmed growth-stage funding counts as evidence
+    enrichment_growth_verified = False
+    if enrichment is not None and getattr(enrichment, "available", False):
+        fs = getattr(enrichment, "funding_stage", None)
+        if isinstance(fs, str) and fs in _GROWTH_FUNDING_STAGES:
+            enrichment_growth_verified = True
+            evidence += 1
 
     if causal >= 2 and (hiring or customer_count >= 1):
         rubric = 15    # multiple growth signals
@@ -258,13 +348,17 @@ def score_growth_signals(spans: List[Span]) -> ChannelScore:
     else:
         rubric = 0
 
+    # TB-18: enrichment funding-stage growth boost (+5, capped at channel max 15)
+    if enrichment_growth_verified:
+        rubric = min(15, rubric + 5)
+
     return ChannelScore("growth_signals", rubric, evidence)
 
 
 # ─── aggregator ─────────────────────────────────────────────────────────────
 
 def score_all_channels(
-    spans: List[Span], inp: ScrapedInput, text: str = ""
+    spans: List[Span], inp: ScrapedInput, text: str = "", enrichment=None,
 ) -> Dict[str, ChannelScore]:
     """Run all 5 channels. Returns a dict keyed by schema field name.
 
@@ -272,13 +366,24 @@ def score_all_channels(
     can apply the non-commercial gate, commercial-subscription gate, and
     named-client check. When `text` is empty (legacy callers), the scorers
     behave as TB-04 originally — backward-compatible.
+
+    TB-15: `enrichment` is an optional EnrichmentResult passed to the two
+    channels that consume it (company_size_fit and decision_maker_seniority).
+    When `enrichment` is None or `enrichment.available` is False, all
+    scorers behave bit-identically to TB-09 — backward-compatible.
+
+    TB-18: enrichment now also forwards to industry_fit (consumes
+    industry_class as B2B verification) and growth_signals (consumes
+    funding_stage as growth verification). budget_likelihood_score
+    remains unchanged in this packet — funding_stage→budget mapping
+    requires more design care and is deferred.
     """
     return {
-        "industry_fit": score_industry_fit(spans, text),
-        "company_size_fit": score_company_size_fit(spans),
-        "decision_maker_seniority": score_decision_maker_seniority(inp.title),
+        "industry_fit": score_industry_fit(spans, text, enrichment),
+        "company_size_fit": score_company_size_fit(spans, enrichment),
+        "decision_maker_seniority": score_decision_maker_seniority(inp.title, enrichment),
         "budget_likelihood_score": score_budget_likelihood(spans, text),
-        "growth_signals": score_growth_signals(spans),
+        "growth_signals": score_growth_signals(spans, enrichment),
     }
 
 

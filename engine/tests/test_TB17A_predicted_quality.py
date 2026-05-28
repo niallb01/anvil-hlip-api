@@ -1,0 +1,277 @@
+"""TB-17A — predicted_quality field exposure tests.
+
+Covers the new schema field's behavior across the three config regimes:
+
+1. Default config (no state provider) — sigmoid((lead_score - 50)/17.5),
+   "rubric-derived" annotation in rationale, value in [0.01, 0.99].
+2. State provider but no outcomes recorded — same as default (baseline
+   logistic with zero weights and bias).
+3. State provider WITH outcomes recorded — value moves per the bounded
+   online logistic; rationale annotation switches to "calibrated against
+   N outcome update(s)".
+
+Also covers Law-0 wrapper bounds handling and schema validation.
+"""
+
+import json
+
+import pytest
+
+from anvil_scout.contracts import ScoredOutput, SignalEvidence
+from anvil_scout.core.enrichment import reset_provider
+from anvil_scout.core.law_zero import enforce_law_zero
+from anvil_scout.core.schema_validator import validate_output
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider():
+    reset_provider()
+    yield
+    reset_provider()
+
+
+# ─── 1. Schema field presence and shape ────────────────────────────────────
+
+class TestSchemaShape:
+
+    def test_scored_output_default_has_predicted_quality_0_5(self):
+        """The dataclass default is 0.5 — neutral, no smuggled prior."""
+        out = ScoredOutput()
+        assert out.predicted_quality == 0.5
+
+    def test_to_dict_includes_predicted_quality(self):
+        out = ScoredOutput()
+        out.predicted_quality = 0.73
+        d = out.to_dict()
+        assert "predicted_quality" in d
+        assert d["predicted_quality"] == 0.73
+
+    def test_schema_json_lists_predicted_quality_required(self):
+        import os, json as _json
+        schema_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "SCHEMA.json",
+        )
+        with open(schema_path) as f:
+            schema = _json.load(f)
+        assert "predicted_quality" in schema["required"]
+        prop = schema["properties"]["predicted_quality"]
+        assert prop["type"] == "number"
+        assert prop["minimum"] == 0.0
+        assert prop["maximum"] == 1.0
+
+
+# ─── 2. Default config (no state provider) ─────────────────────────────────
+
+class TestDefaultConfig:
+
+    SAMPLE_RICH = json.dumps({
+        "name": "Jane",
+        "title": "Head of Sales",
+        "company": "Acme",
+        "website_url": "",
+        "website_content": "Acme is a B2B SaaS platform. Founded in 2019. " * 8,
+    })
+
+    def test_predicted_quality_present_no_state_provider(self):
+        from anvil_scout.cli import run_once
+        out = json.loads(run_once(self.SAMPLE_RICH))
+        assert "predicted_quality" in out
+        assert isinstance(out["predicted_quality"], (int, float))
+
+    def test_predicted_quality_in_range(self):
+        from anvil_scout.cli import run_once
+        out = json.loads(run_once(self.SAMPLE_RICH))
+        assert 0.0 <= out["predicted_quality"] <= 1.0
+
+    def test_predicted_quality_sigmoid_of_rubric_at_lead_80(self):
+        """sigmoid((80-50)/17.5) ≈ 0.847 → rounded to ~0.85."""
+        from anvil_scout.cli import run_once
+        with open("data/sample_input.json") as f:
+            raw = f.read()
+        out = json.loads(run_once(raw))
+        assert out["lead_score"] == 80
+        pq = out["predicted_quality"]
+        assert 0.83 <= pq <= 0.86, (
+            f"predicted_quality at lead=80 should be ~0.85 "
+            f"(sigmoid((80-50)/17.5)); got {pq}"
+        )
+
+    def test_rationale_annotates_rubric_derived(self):
+        from anvil_scout.cli import run_once
+        out = json.loads(run_once(self.SAMPLE_RICH))
+        assert "rubric-derived" in out["rationale"]
+        assert "predicted_quality" in out["rationale"]
+
+    def test_low_lead_score_gives_low_predicted_quality(self):
+        """Empty input → lead_score=0 → predicted_quality ≈ 0.05 (clamped)."""
+        from anvil_scout.cli import run_once
+        empty_inp = json.dumps({
+            "name": "", "title": "", "company": "",
+            "website_url": "", "website_content": "",
+        })
+        out = json.loads(run_once(empty_inp))
+        assert out["lead_score"] == 0
+        # sigmoid(-50/17.5) ≈ 0.057; bounded to [0.01, 0.99]
+        assert 0.01 <= out["predicted_quality"] <= 0.10
+
+    def test_midpoint_lead_score_gives_midpoint_predicted_quality(self):
+        """Lead score near 50 should give predicted_quality near 0.5."""
+        # Find a fixture with lead_score in [40, 60]; use it
+        from anvil_scout.cli import run_once
+        # 02_b2b_services_agency.json has lead_score=40
+        with open("data/e2e_fixtures/02_b2b_services_agency.json") as f:
+            raw = f.read()
+        out = json.loads(run_once(raw))
+        ls = out["lead_score"]
+        if 40 <= ls <= 60:
+            # sigmoid((ls-50)/17.5) for ls in [40,60] gives [0.36, 0.64]
+            assert 0.30 <= out["predicted_quality"] <= 0.70
+
+
+# ─── 3. Law-0 wrapper handles predicted_quality bounds ────────────────────
+
+class TestLawZeroBounds:
+
+    def test_in_range_value_passes_unchanged(self):
+        out = ScoredOutput()
+        out.predicted_quality = 0.7
+        out, violations = enforce_law_zero(out, [], thin_scrape=False)
+        assert out.predicted_quality == 0.7
+        assert violations == 0
+
+    def test_above_range_value_clamped_to_1_0(self):
+        out = ScoredOutput()
+        out.predicted_quality = 1.5
+        out, violations = enforce_law_zero(out, [], thin_scrape=False)
+        assert out.predicted_quality == 1.0
+        assert violations == 1
+
+    def test_below_range_value_clamped_to_0_0(self):
+        out = ScoredOutput()
+        out.predicted_quality = -0.3
+        out, violations = enforce_law_zero(out, [], thin_scrape=False)
+        assert out.predicted_quality == 0.0
+        assert violations == 1
+
+    def test_non_numeric_value_resets_to_0_5(self):
+        out = ScoredOutput()
+        out.predicted_quality = "garbage"  # type: ignore
+        out, violations = enforce_law_zero(out, [], thin_scrape=False)
+        assert out.predicted_quality == 0.5
+        assert violations == 1
+
+    def test_bool_value_rejected_as_non_numeric(self):
+        """Python bool is a subclass of int, but we treat it as a type error
+        here — predicted_quality is a probability, not a flag."""
+        out = ScoredOutput()
+        out.predicted_quality = True  # type: ignore
+        out, violations = enforce_law_zero(out, [], thin_scrape=False)
+        assert out.predicted_quality == 0.5
+        assert violations == 1
+
+
+# ─── 4. Schema validation accepts the new field ───────────────────────────
+
+class TestSchemaValidation:
+
+    def test_full_payload_with_predicted_quality_validates(self):
+        payload = {
+            "lead_score": 50,
+            "industry_fit": 10,
+            "company_size_fit": 15,
+            "decision_maker_seniority": 10,
+            "budget_likelihood_score": 10,
+            "growth_signals": 5,
+            "pain_points": [],
+            "budget_likelihood": "medium",
+            "decision_maker": True,
+            "predicted_quality": 0.5,
+            "rationale": "test",
+            "signal_evidence": {
+                "verified": [], "weak": [], "missing": [],
+                "confidence": 0.5, "thin_scrape": False,
+            },
+        }
+        is_valid, errors = validate_output(payload)
+        assert is_valid, f"payload should validate; errors: {errors}"
+
+    def test_predicted_quality_out_of_range_fails_schema(self):
+        payload = {
+            "lead_score": 50, "industry_fit": 10, "company_size_fit": 15,
+            "decision_maker_seniority": 10, "budget_likelihood_score": 10,
+            "growth_signals": 5, "pain_points": [],
+            "budget_likelihood": "medium", "decision_maker": True,
+            "predicted_quality": 1.5,
+            "rationale": "test",
+            "signal_evidence": {
+                "verified": [], "weak": [], "missing": [],
+                "confidence": 0.5, "thin_scrape": False,
+            },
+        }
+        is_valid, errors = validate_output(payload)
+        assert not is_valid
+
+    def test_missing_predicted_quality_fails_schema(self):
+        payload = {
+            "lead_score": 50, "industry_fit": 10, "company_size_fit": 15,
+            "decision_maker_seniority": 10, "budget_likelihood_score": 10,
+            "growth_signals": 5, "pain_points": [],
+            "budget_likelihood": "medium", "decision_maker": True,
+            # no predicted_quality
+            "rationale": "test",
+            "signal_evidence": {
+                "verified": [], "weak": [], "missing": [],
+                "confidence": 0.5, "thin_scrape": False,
+            },
+        }
+        is_valid, errors = validate_output(payload)
+        assert not is_valid
+
+
+# ─── 5. State provider WITH outcomes: calibration shows ───────────────────
+
+class TestCalibrationFlow:
+    """When outcomes have been recorded, predicted_quality must reflect
+    the trained model, not just the rubric-derived baseline, AND the
+    rationale annotation switches to 'calibrated'."""
+
+    SAMPLE_RICH = json.dumps({
+        "name": "Jane",
+        "title": "Head of Sales",
+        "company": "Acme",
+        "website_url": "",
+        "website_content": "Acme is a B2B SaaS platform. Founded in 2019. " * 8,
+    })
+
+    def test_rationale_says_calibrated_after_outcome_recorded(self, tmp_path):
+        """One outcome is enough to flip the rationale annotation."""
+        from anvil_scout.daedalus.state import SQLiteStateProvider
+        from anvil_scout.daedalus.modes import parse_mode
+        from anvil_scout.daedalus.predictive import (
+            opaque_lead_id, apply_outcome_to_state,
+        )
+        from anvil_scout.contracts import ScrapedInput
+        from anvil_scout.cli import run_once
+
+        db_path = str(tmp_path / "state.db")
+        provider = SQLiteStateProvider(db_path)
+        mode = parse_mode("learning")
+
+        # First call: LEARNING mode, records episode
+        _ = run_once(self.SAMPLE_RICH, state_provider=provider, mode=mode)
+
+        # Record an outcome
+        inp = ScrapedInput.from_dict(json.loads(self.SAMPLE_RICH))
+        lead_id = opaque_lead_id(inp)
+        with provider.transaction():
+            state = provider.load()
+            apply_outcome_to_state(state, lead_id=lead_id, label="won")
+            provider.save(state)
+
+        # Second call: rationale annotation must switch
+        out_json = run_once(self.SAMPLE_RICH, state_provider=provider, mode=mode)
+        out = json.loads(out_json)
+        assert "calibrated against" in out["rationale"]
+        assert "rubric-derived" not in out["rationale"]
+        assert "predicted_quality" in out["rationale"]

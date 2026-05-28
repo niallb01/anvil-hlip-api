@@ -1,0 +1,542 @@
+"""TB-15 — Enrichment consumption wiring tests.
+
+Covers six concerns:
+
+1. enrichment_to_spans adapter shape (subtypes, provenance, no-op on
+   unavailable).
+2. Classifier kind="enrichment" branch — VERIFIED, not WEAK, not affected
+   by co-occurrence proximity test.
+3. Law-0 wrapper accepts enrichment/* prefixes — does NOT strip them.
+4. score_company_size_fit lift to 25 when employee_count in [20,200].
+5. score_decision_maker_seniority upgrade when dm_confirmed=True.
+6. Backward-compatibility: with default StubProvider OR provider returning
+   available=False, all sample outputs are bit-identical to v0.1.0/TB14A.
+
+These tests exist independently of test_enrichment.py (which covers the
+TB-07 seam itself); this file specifically covers the TB-15 CONSUMPTION
+of enrichment in the pipeline.
+"""
+
+import copy
+import json
+
+import pytest
+
+from anvil_scout.contracts import ScrapedInput
+from anvil_scout.core.classifier import classify_signals
+from anvil_scout.core.detectors import Span
+from anvil_scout.core.enrichment import (
+    EnrichmentResult,
+    StubProvider,
+    enrichment_to_spans,
+    reset_provider,
+    set_provider,
+)
+from anvil_scout.core.law_zero import enforce_law_zero, _VALID_VW_PREFIXES
+from anvil_scout.core.scorer import (
+    score_company_size_fit,
+    score_decision_maker_seniority,
+    score_all_channels,
+)
+from anvil_scout.contracts import ScoredOutput, SignalEvidence
+
+
+@pytest.fixture(autouse=True)
+def _isolate_provider():
+    reset_provider()
+    yield
+    reset_provider()
+
+
+# ─── 1. enrichment_to_spans ────────────────────────────────────────────────
+
+class TestEnrichmentToSpans:
+
+    def test_unavailable_returns_empty(self):
+        r = EnrichmentResult(available=False)
+        assert enrichment_to_spans(r) == []
+
+    def test_none_returns_empty(self):
+        assert enrichment_to_spans(None) == []
+
+    def test_available_no_fields_returns_empty(self):
+        r = EnrichmentResult(available=True)
+        assert enrichment_to_spans(r) == []
+
+    def test_employee_count_emits_one_span(self):
+        r = EnrichmentResult(available=True, employee_count=85)
+        spans = enrichment_to_spans(r, provider_id="apollo")
+        assert len(spans) == 1
+        s = spans[0]
+        assert s.kind == "enrichment"
+        assert s.subtype == "employee_count"
+        assert "provider=apollo" in s.text
+        assert "employee_count=85" in s.text
+
+    def test_all_four_fields_emit_four_spans(self):
+        r = EnrichmentResult(
+            available=True,
+            employee_count=85,
+            funding_stage="seriesB",
+            industry_class="saas",
+            decision_maker_confirmed=True,
+        )
+        spans = enrichment_to_spans(r, provider_id="apollo")
+        assert len(spans) == 4
+        subtypes = {s.subtype for s in spans}
+        assert subtypes == {
+            "employee_count", "funding_stage",
+            "industry_class", "decision_maker_confirmed",
+        }
+        # Provenance present in every span
+        assert all("provider=apollo" in s.text for s in spans)
+
+    def test_provider_id_falls_back_to_result_field(self):
+        r = EnrichmentResult(available=True, employee_count=85,
+                             provider_id="clearbit")
+        spans = enrichment_to_spans(r)   # no provider_id arg
+        assert len(spans) == 1
+        assert "provider=clearbit" in spans[0].text
+
+    def test_provider_id_unknown_when_neither_set(self):
+        r = EnrichmentResult(available=True, employee_count=85)
+        spans = enrichment_to_spans(r)
+        assert "provider=unknown" in spans[0].text
+
+    def test_non_int_employee_count_ignored(self):
+        r = EnrichmentResult(available=True, employee_count="abc")   # type: ignore
+        spans = enrichment_to_spans(r)
+        # Field rejected; no span emitted for it
+        assert spans == []
+
+    def test_non_bool_decision_maker_ignored(self):
+        r = EnrichmentResult(available=True, decision_maker_confirmed="yes")  # type: ignore
+        spans = enrichment_to_spans(r)
+        assert spans == []
+
+    def test_spans_have_synthetic_position(self):
+        r = EnrichmentResult(available=True, employee_count=85)
+        spans = enrichment_to_spans(r)
+        assert spans[0].start == 0
+        assert spans[0].end == 0
+
+
+# ─── 2. Classifier kind="enrichment" branch ────────────────────────────────
+
+class TestClassifierEnrichment:
+
+    def test_enrichment_lands_in_verified(self):
+        span = Span(
+            start=0, end=0,
+            text="provider=apollo; employee_count=85",
+            kind="enrichment", subtype="employee_count",
+            confidence=1.0,
+        )
+        v, w, m = classify_signals([span])
+        assert len(v) == 1
+        assert any("enrichment/employee_count" in s for s in v)
+        assert w == []
+        assert m == []
+
+    def test_enrichment_not_classified_as_weak(self):
+        """JB-15-4 mitigation: synthetic start=0,end=0 must not trigger
+        the testimony/causal co-occurrence proximity check."""
+        ent = Span(
+            start=0, end=0,
+            text="provider=apollo; employee_count=85",
+            kind="enrichment", subtype="employee_count",
+            confidence=1.0,
+        )
+        # Add a testimony span far away in the text; without our explicit
+        # branch, both spans would land in the "else" path together.
+        testimony = Span(
+            start=5000, end=5050,
+            text="they say we are great",
+            kind="testimony", subtype="claim_marker",
+            confidence=0.7,
+        )
+        v, w, m = classify_signals([ent, testimony])
+        # Enrichment span goes to VERIFIED (its branch), not WEAK.
+        enrichment_entries = [s for s in v if "enrichment/" in s]
+        assert len(enrichment_entries) == 1
+
+
+# ─── 3. Law-0 wrapper accepts enrichment/* prefixes ─────────────────────────
+
+class TestLawZeroEnrichment:
+
+    def test_enrichment_prefixes_in_valid_set(self):
+        # The four TB-15 prefixes must be present
+        for sub in ("employee_count", "funding_stage", "industry_class",
+                    "decision_maker_confirmed"):
+            assert f"enrichment/{sub}" in _VALID_VW_PREFIXES
+
+    def test_law_zero_does_not_strip_enrichment_entry(self):
+        """A verified entry whose prefix is enrichment/* + a backing
+        enrichment span in the spans list must SURVIVE the wrapper."""
+        span = Span(
+            start=0, end=0,
+            text="provider=apollo; employee_count=85",
+            kind="enrichment", subtype="employee_count",
+            confidence=1.0,
+        )
+        scored = ScoredOutput()
+        scored.signal_evidence = SignalEvidence(
+            verified=["enrichment/employee_count: provider=apollo; employee_count=85"],
+            weak=[],
+            missing=[],
+            signal_density=0.5,
+            thin_scrape=False,
+        )
+        out, violations = enforce_law_zero(scored, [span], thin_scrape=False)
+        assert violations == 0
+        assert len(out.signal_evidence.verified) == 1
+        assert "enrichment/employee_count" in out.signal_evidence.verified[0]
+
+    def test_unknown_enrichment_subtype_is_stripped(self):
+        """The filter still works — only the four TB-15 prefixes are
+        admitted. A made-up enrichment/* subtype must be stripped."""
+        scored = ScoredOutput()
+        scored.signal_evidence = SignalEvidence(
+            verified=["enrichment/made_up_field: bogus value"],
+            weak=[],
+            missing=[],
+            signal_density=0.5,
+            thin_scrape=False,
+        )
+        out, violations = enforce_law_zero(scored, [], thin_scrape=False)
+        assert violations == 1
+        assert out.signal_evidence.verified == []
+
+    def test_enrichment_claim_without_backing_span_is_stripped(self):
+        """Even if the prefix is valid, the wrapper still requires a
+        backing span. Synthesised enrichment claim with no provider call
+        gets dropped."""
+        scored = ScoredOutput()
+        scored.signal_evidence = SignalEvidence(
+            verified=["enrichment/employee_count: provider=ghost; employee_count=99"],
+            weak=[],
+            missing=[],
+            signal_density=0.5,
+            thin_scrape=False,
+        )
+        out, violations = enforce_law_zero(scored, [], thin_scrape=False)
+        # No backing span -> stripped
+        assert violations == 1
+        assert out.signal_evidence.verified == []
+
+
+# ─── 4. score_company_size_fit lift ────────────────────────────────────────
+
+class TestCompanySizeFitLift:
+
+    def test_in_range_employee_count_lifts_to_25(self):
+        enrichment = EnrichmentResult(available=True, employee_count=85)
+        cs = score_company_size_fit(spans=[], enrichment=enrichment)
+        assert cs.final_score == 25
+        assert cs.evidence_count >= 1   # enrichment counts as evidence
+
+    def test_lower_bound_of_range(self):
+        enrichment = EnrichmentResult(available=True, employee_count=20)
+        cs = score_company_size_fit(spans=[], enrichment=enrichment)
+        assert cs.final_score == 25
+
+    def test_upper_bound_of_range(self):
+        enrichment = EnrichmentResult(available=True, employee_count=200)
+        cs = score_company_size_fit(spans=[], enrichment=enrichment)
+        assert cs.final_score == 25
+
+    def test_below_range_falls_back_to_heuristic(self):
+        enrichment = EnrichmentResult(available=True, employee_count=5)
+        cs = score_company_size_fit(spans=[], enrichment=enrichment)
+        # Falls back to TB-04 heuristic. With spans=[], hiring & team_about
+        # are _present (absence of missing means present), giving rubric=10.
+        assert cs.final_score == 10
+
+    def test_above_range_falls_back_to_heuristic(self):
+        enrichment = EnrichmentResult(available=True, employee_count=5000)
+        cs = score_company_size_fit(spans=[], enrichment=enrichment)
+        # Above-range → fallback to TB-04 heuristic = 10 (see above)
+        assert cs.final_score == 10
+
+    def test_unavailable_enrichment_falls_back(self):
+        enrichment = EnrichmentResult(available=False)
+        cs = score_company_size_fit(spans=[], enrichment=enrichment)
+        # Unavailable → fallback to TB-04 heuristic = 10
+        assert cs.final_score == 10
+
+    def test_none_enrichment_preserves_tb04_behavior(self):
+        # No enrichment arg at all — must be backward-compatible with TB-04.
+        # Identical fallback path → identical score.
+        cs = score_company_size_fit(spans=[])
+        assert cs.final_score == 10
+
+    def test_non_int_employee_count_falls_back(self):
+        enrichment = EnrichmentResult(available=True)
+        # Bypass dataclass typing intentionally to simulate bad provider data
+        object.__setattr__(enrichment, "employee_count", "lots")
+        cs = score_company_size_fit(spans=[], enrichment=enrichment)
+        assert cs.final_score == 10   # type-rejected, fallback path
+
+    def test_with_explicit_missing_spans_no_enrichment_returns_zero(self):
+        """Confirms the heuristic CAN return 0 when ALL B2B categories
+        are explicitly absent — verifies the test assumption is correct."""
+        from anvil_scout.core.detectors import Span
+        missing_spans = [
+            Span(start=-1, end=-1, text="", kind="missing", subtype=sub, confidence=1.0)
+            for sub in ("pricing", "hiring", "customers", "team_about", "product")
+        ]
+        cs = score_company_size_fit(spans=missing_spans)
+        # All categories missing, no quantity spans → rubric=0
+        assert cs.final_score == 0
+
+    def test_in_range_enrichment_overrides_explicit_missing(self):
+        """Even when website explicitly lacks every B2B category, an
+        in-range employee_count from enrichment should lift the channel."""
+        from anvil_scout.core.detectors import Span
+        missing_spans = [
+            Span(start=-1, end=-1, text="", kind="missing", subtype=sub, confidence=1.0)
+            for sub in ("pricing", "hiring", "customers", "team_about", "product")
+        ]
+        enrichment = EnrichmentResult(available=True, employee_count=85)
+        cs = score_company_size_fit(spans=missing_spans, enrichment=enrichment)
+        assert cs.final_score == 25
+
+
+# ─── 5. score_decision_maker_seniority upgrade ─────────────────────────────
+
+class TestDecisionMakerUpgrade:
+
+    def test_csuite_unchanged_with_confirmation(self):
+        """C-suite title already scores 20; confirmation doesn't change rubric."""
+        enrichment = EnrichmentResult(available=True, decision_maker_confirmed=True)
+        dm = score_decision_maker_seniority("CEO", enrichment=enrichment)
+        assert dm.final_score == 20
+
+    def test_senior_title_upgraded_to_20(self):
+        """'Senior Engineer' usually scores 15; confirmation lifts to 20."""
+        enrichment = EnrichmentResult(available=True, decision_maker_confirmed=True)
+        dm = score_decision_maker_seniority("Senior Engineer", enrichment=enrichment)
+        assert dm.final_score == 20
+
+    def test_manager_upgraded_to_20(self):
+        enrichment = EnrichmentResult(available=True, decision_maker_confirmed=True)
+        dm = score_decision_maker_seniority("Engineering Manager", enrichment=enrichment)
+        assert dm.final_score == 20
+
+    def test_ic_upgraded_to_20(self):
+        enrichment = EnrichmentResult(available=True, decision_maker_confirmed=True)
+        dm = score_decision_maker_seniority("Software Engineer", enrichment=enrichment)
+        assert dm.final_score == 20
+
+    def test_dm_confirmed_false_does_not_change_score(self):
+        enrichment = EnrichmentResult(available=True, decision_maker_confirmed=False)
+        dm = score_decision_maker_seniority("Senior Engineer", enrichment=enrichment)
+        assert dm.final_score == 15   # title-based, unchanged
+
+    def test_dm_confirmed_none_does_not_change_score(self):
+        enrichment = EnrichmentResult(available=True, decision_maker_confirmed=None)
+        dm = score_decision_maker_seniority("Senior Engineer", enrichment=enrichment)
+        assert dm.final_score == 15
+
+    def test_unavailable_enrichment_no_upgrade(self):
+        enrichment = EnrichmentResult(available=False, decision_maker_confirmed=True)
+        dm = score_decision_maker_seniority("Senior Engineer", enrichment=enrichment)
+        assert dm.final_score == 15   # available=False blocks the upgrade
+
+    def test_empty_title_lifted_by_confirmation(self):
+        enrichment = EnrichmentResult(available=True, decision_maker_confirmed=True)
+        dm = score_decision_maker_seniority("", enrichment=enrichment)
+        assert dm.final_score == 20
+        assert dm.evidence_count == 1
+
+    def test_empty_title_no_enrichment_returns_zero(self):
+        dm = score_decision_maker_seniority("")
+        assert dm.final_score == 0
+
+
+# ─── 6. End-to-end CLI behaviour change ────────────────────────────────────
+
+class TestCLIEndToEnd:
+
+    SAMPLE_PAYLOAD = json.dumps({
+        "name": "Jane",
+        "title": "Senior Engineer",
+        "company": "Acme",
+        "website_url": "",
+        "website_content": "Acme is a B2B SaaS platform. Founded in 2019. " * 8,
+    })
+
+    def test_baseline_with_stub_provider(self):
+        """With StubProvider, the sample output's seniority comes from title."""
+        from anvil_scout.cli import run_once
+        out = json.loads(run_once(self.SAMPLE_PAYLOAD))
+        assert out["decision_maker_seniority"] == 15   # senior engineer
+        # decision_maker is True iff seniority >= 15 (TB-04). 15 hits the boundary.
+        assert out["decision_maker"] is True
+
+    def test_provider_dm_confirmed_lifts_seniority_to_20(self):
+        """Wiring partner provider → seniority upgrade visible in output."""
+        from anvil_scout.cli import run_once
+
+        class ConfirmingProvider:
+            def fetch(self, company, website_url):
+                return EnrichmentResult(
+                    available=True,
+                    decision_maker_confirmed=True,
+                    provider_id="test_confirming",
+                )
+
+        set_provider(ConfirmingProvider())
+        try:
+            out = json.loads(run_once(self.SAMPLE_PAYLOAD))
+        finally:
+            reset_provider()
+        assert out["decision_maker_seniority"] == 20
+
+    def test_provider_employee_count_lifts_size_fit_to_25(self):
+        """Wiring partner provider → size lift visible in output."""
+        from anvil_scout.cli import run_once
+
+        class SizeProvider:
+            def fetch(self, company, website_url):
+                return EnrichmentResult(
+                    available=True,
+                    employee_count=85,
+                    provider_id="test_size",
+                )
+
+        set_provider(SizeProvider())
+        try:
+            out = json.loads(run_once(self.SAMPLE_PAYLOAD))
+        finally:
+            reset_provider()
+        assert out["company_size_fit"] == 25
+
+    def test_enrichment_appears_in_signal_evidence_verified(self):
+        """Enrichment provenance must be in the V/W/M audit trail."""
+        from anvil_scout.cli import run_once
+
+        class RichProvider:
+            def fetch(self, company, website_url):
+                return EnrichmentResult(
+                    available=True,
+                    employee_count=85,
+                    decision_maker_confirmed=True,
+                    provider_id="apollo",
+                )
+
+        set_provider(RichProvider())
+        try:
+            out = json.loads(run_once(self.SAMPLE_PAYLOAD))
+        finally:
+            reset_provider()
+
+        verified = out["signal_evidence"]["verified"]
+        # Both enrichment claims should be present in verified
+        assert any("enrichment/employee_count" in v for v in verified)
+        assert any("enrichment/decision_maker_confirmed" in v for v in verified)
+        # And they carry the provider_id (provenance)
+        assert any("provider=apollo" in v for v in verified)
+
+    def test_provider_exception_does_not_crash_pipeline(self):
+        """Strip-don't-raise: provider that throws is handled gracefully."""
+        from anvil_scout.cli import run_once
+
+        class BrokenProvider:
+            def fetch(self, company, website_url):
+                raise RuntimeError("oh no")
+
+        set_provider(BrokenProvider())
+        try:
+            out = json.loads(run_once(self.SAMPLE_PAYLOAD))
+        finally:
+            reset_provider()
+        # Should still produce a valid output (and surface error in rationale)
+        assert "lead_score" in out
+        assert "provider error" in out["rationale"] or "unavailable" in out["rationale"]
+
+    def test_provider_returning_none_fields_does_not_break(self):
+        """available=True but no fields populated — must not crash."""
+        from anvil_scout.cli import run_once
+
+        class EmptyProvider:
+            def fetch(self, company, website_url):
+                return EnrichmentResult(available=True, provider_id="empty")
+
+        set_provider(EmptyProvider())
+        try:
+            out = json.loads(run_once(self.SAMPLE_PAYLOAD))
+        finally:
+            reset_provider()
+        assert "lead_score" in out
+        # No enrichment spans should be in verified
+        verified = out["signal_evidence"]["verified"]
+        assert not any("enrichment/" in v for v in verified)
+
+
+# ─── 7. Conservative-extension regression (load-bearing) ───────────────────
+
+class TestConservativeExtensionRegression:
+    """The load-bearing TB-15 invariant: default-config output is
+    byte-identical to v0.1.0/TB-14A on every fixture. If this breaks,
+    TB-15 broke the partner contract."""
+
+    def test_sample_output_byte_identical_with_default_provider(self):
+        """Post-TB-15 (and TB-17A) regression invariant.
+
+        At TB-15 lock this was a strict MD5 check against the v0.1.0
+        baseline. TB-17A is an INTENTIONAL additive schema change
+        (adds `predicted_quality`), so strict MD5 cannot hold. The
+        stronger invariant that survives additive changes is:
+
+            All ORIGINAL fields' values are unchanged vs the published
+            TB-15 baseline, AND any new field (predicted_quality) is
+            within its declared range.
+
+        This catches behaviour regression while explicitly permitting
+        additive schema growth.
+        """
+        from anvil_scout.cli import run_once
+        with open("data/sample_input.json") as f:
+            raw = f.read()
+        out = json.loads(run_once(raw))
+
+        # ── Published TB-15 baseline values (exact, every existing field)
+        expected = {
+            "lead_score": 80,
+            "industry_fit": 20,
+            "company_size_fit": 10,
+            "decision_maker_seniority": 20,
+            "budget_likelihood_score": 20,
+            "growth_signals": 10,
+            "pain_points": [],
+            "budget_likelihood": "high",
+            "decision_maker": True,
+        }
+        for key, want in expected.items():
+            assert out[key] == want, (
+                f"TB-15 baseline regressed on '{key}': "
+                f"expected {want!r}, got {out[key]!r}"
+            )
+
+        # ── signal_evidence shape (count/range checks)
+        se = out["signal_evidence"]
+        assert se["signal_density"] == 0.8
+        assert se["thin_scrape"] is False
+        assert len(se["verified"]) == 8
+        assert se["weak"] == []
+        assert se["missing"] == []
+
+        # ── TB-17A: new field present and in range
+        assert "predicted_quality" in out, (
+            "TB-17A: predicted_quality must be in output"
+        )
+        pq = out["predicted_quality"]
+        assert isinstance(pq, (int, float))
+        assert 0.0 <= pq <= 1.0
+        # With lead_score=80 and no outcomes, sigmoid((80-50)/17.5) ≈ 0.85
+        assert 0.80 <= pq <= 0.90, (
+            f"predicted_quality without outcomes should be ~0.85 for "
+            f"lead_score=80; got {pq}"
+        )

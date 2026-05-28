@@ -106,7 +106,7 @@ _REQUIRED_DEFAULTS_SE = {
     "verified": [],
     "weak": [],
     "missing": [],
-    "confidence": 0.0,
+    "signal_density": 0.0,
     "thin_scrape": False,
 }
 

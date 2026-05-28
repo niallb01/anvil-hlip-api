@@ -1,0 +1,44 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AnvilScoutOutput",
+  "version": "2.0.0",
+  "type": "object",
+  "required": [
+    "lead_score",
+    "industry_fit",
+    "company_size_fit",
+    "decision_maker_seniority",
+    "budget_likelihood_score",
+    "growth_signals",
+    "pain_points",
+    "budget_likelihood",
+    "decision_maker",
+    "predicted_quality",
+    "rationale",
+    "signal_evidence"
+  ],
+  "properties": {
+    "lead_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+    "industry_fit": { "type": "integer", "minimum": 0, "maximum": 20 },
+    "company_size_fit": { "type": "integer", "minimum": 0, "maximum": 25 },
+    "decision_maker_seniority": { "type": "integer", "minimum": 0, "maximum": 20 },
+    "budget_likelihood_score": { "type": "integer", "minimum": 0, "maximum": 20 },
+    "growth_signals": { "type": "integer", "minimum": 0, "maximum": 15 },
+    "pain_points": { "type": "array", "items": { "type": "string" } },
+    "budget_likelihood": { "type": "string", "enum": ["high", "medium", "low"] },
+    "decision_maker": { "type": "boolean" },
+    "predicted_quality": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+    "rationale": { "type": "string" },
+    "signal_evidence": {
+      "type": "object",
+      "required": ["verified", "weak", "missing", "signal_density", "thin_scrape"],
+      "properties": {
+        "verified": { "type": "array", "items": { "type": "string" } },
+        "weak": { "type": "array", "items": { "type": "string" } },
+        "missing": { "type": "array", "items": { "type": "string" } },
+        "signal_density": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "thin_scrape": { "type": "boolean" }
+      }
+    }
+  }
+}

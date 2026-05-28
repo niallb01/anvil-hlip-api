@@ -1,0 +1,230 @@
+"""TB-06 — schema validator tests."""
+
+import json
+
+from anvil_scout.cli import run_once
+from anvil_scout.core.schema_validator import (
+    load_schema,
+    validate_output,
+    validate_or_repair,
+)
+
+
+def _good_payload() -> dict:
+    """A schema-valid baseline used as the starting point for negative tests."""
+    return {
+        "lead_score": 50,
+        "industry_fit": 10,
+        "company_size_fit": 15,
+        "decision_maker_seniority": 10,
+        "budget_likelihood_score": 10,
+        "growth_signals": 5,
+        "pain_points": [],
+        "budget_likelihood": "medium",
+        "decision_maker": True,
+        "predicted_quality": 0.5,
+        "rationale": "test",
+        "signal_evidence": {
+            "verified": [],
+            "weak": [],
+            "missing": [],
+            "signal_density": 0.5,
+            "thin_scrape": False,
+        },
+    }
+
+
+# ─── schema loader ─────────────────────────────────────────────────────────
+
+class TestSchemaLoader:
+
+    def test_load_schema_returns_dict(self):
+        s = load_schema()
+        assert isinstance(s, dict)
+        assert "required" in s
+        assert "properties" in s
+
+    def test_load_schema_is_cached(self):
+        s1 = load_schema()
+        s2 = load_schema()
+        assert s1 is s2   # same object
+
+
+# ─── valid baseline ────────────────────────────────────────────────────────
+
+class TestValidBaseline:
+
+    def test_good_payload_validates(self):
+        is_valid, errors = validate_output(_good_payload())
+        assert is_valid, f"baseline should be valid, errors={errors}"
+        assert errors == []
+
+
+# ─── missing fields ────────────────────────────────────────────────────────
+
+class TestMissingFields:
+
+    def test_missing_lead_score_fails(self):
+        d = _good_payload()
+        del d["lead_score"]
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+        assert any("lead_score" in e for e in errors)
+
+    def test_missing_signal_evidence_fails(self):
+        d = _good_payload()
+        del d["signal_evidence"]
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+        assert any("signal_evidence" in e for e in errors)
+
+    def test_missing_signal_evidence_signal_density_fails(self):
+        d = _good_payload()
+        del d["signal_evidence"]["signal_density"]
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+        assert any("signal_density" in e for e in errors)
+
+
+# ─── wrong types ───────────────────────────────────────────────────────────
+
+class TestWrongTypes:
+
+    def test_lead_score_as_string_fails(self):
+        d = _good_payload()
+        d["lead_score"] = "50"
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+
+    def test_decision_maker_as_string_fails(self):
+        d = _good_payload()
+        d["decision_maker"] = "yes"
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+
+    def test_thin_scrape_as_string_fails(self):
+        d = _good_payload()
+        d["signal_evidence"]["thin_scrape"] = "yes"
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+
+    def test_pain_points_as_string_fails(self):
+        d = _good_payload()
+        d["pain_points"] = "not an array"
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+
+
+# ─── out-of-range values ───────────────────────────────────────────────────
+
+class TestRangeViolations:
+
+    def test_industry_fit_over_20_fails(self):
+        d = _good_payload()
+        d["industry_fit"] = 99
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+
+    def test_lead_score_over_100_fails(self):
+        d = _good_payload()
+        d["lead_score"] = 200
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+
+    def test_negative_growth_signals_fails(self):
+        d = _good_payload()
+        d["growth_signals"] = -3
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+
+    def test_signal_density_over_1_fails(self):
+        d = _good_payload()
+        d["signal_evidence"]["signal_density"] = 1.5
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+
+
+# ─── enum violations ───────────────────────────────────────────────────────
+
+class TestEnumViolations:
+
+    def test_invalid_budget_likelihood_fails(self):
+        d = _good_payload()
+        d["budget_likelihood"] = "infinite"
+        is_valid, errors = validate_output(d)
+        assert not is_valid
+
+
+# ─── repair ────────────────────────────────────────────────────────────────
+
+class TestRepair:
+
+    def test_clean_pass_through_no_repair(self):
+        payload, notes = validate_or_repair(_good_payload())
+        assert notes == []
+
+    def test_missing_top_field_repaired(self):
+        d = _good_payload()
+        del d["pain_points"]
+        repaired, notes = validate_or_repair(d)
+        assert "pain_points" in repaired
+        assert repaired["pain_points"] == []
+        assert any("pain_points" in n for n in notes)
+
+    def test_missing_signal_evidence_subfield_repaired(self):
+        d = _good_payload()
+        del d["signal_evidence"]["signal_density"]
+        repaired, notes = validate_or_repair(d)
+        assert "signal_density" in repaired["signal_evidence"]
+        assert any("signal_density" in n for n in notes)
+
+    def test_repaired_payload_passes_validation(self):
+        d = _good_payload()
+        del d["pain_points"]
+        del d["budget_likelihood"]
+        repaired, notes = validate_or_repair(d)
+        is_valid, errors = validate_output(repaired)
+        assert is_valid, f"repaired payload should be valid; remaining errors={errors}"
+
+
+# ─── CLI integration (the headline canary) ─────────────────────────────────
+
+class TestCLIIntegration:
+
+    def test_real_cli_run_produces_valid_output(self):
+        """Clean pipeline → schema-valid emission.
+
+        If this fires, either Law-0 or the dataclass shape has drifted from
+        SCHEMA.json.
+        """
+        inp = json.dumps({
+            "name": "Jane Doe",
+            "title": "Head of Sales",
+            "company": "Acme Co",
+            "website_url": "https://acme.example",
+            "website_content": (
+                "Acme is the leading B2B SaaS platform. Founded in 2019. "
+                "Trusted by over 200 customers. Pricing starts at $499/month. "
+                "Enterprise customers get a 99.95% uptime SLA. "
+                "We are hiring across engineering, sales, and customer success. "
+                "Our automation enables teams to scale revenue by 40%."
+            ),
+        })
+        out = json.loads(run_once(inp))
+        is_valid, errors = validate_output(out)
+        assert is_valid, f"clean CLI output should validate; errors={errors}"
+
+    def test_real_cli_thin_run_also_valid(self):
+        inp = json.dumps({
+            "name": "", "title": "Founder", "company": "",
+            "website_url": "",
+            "website_content": "Coming soon. We're building something cool.",
+        })
+        out = json.loads(run_once(inp))
+        is_valid, errors = validate_output(out)
+        assert is_valid, f"thin CLI output should validate; errors={errors}"
+
+    def test_empty_dict_input_still_schema_valid(self):
+        out = json.loads(run_once("{}"))
+        is_valid, errors = validate_output(out)
+        assert is_valid, f"empty input should still produce schema-valid output; errors={errors}"

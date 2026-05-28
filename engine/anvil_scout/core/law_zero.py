@@ -40,6 +40,14 @@ _VALID_VW_PREFIXES = frozenset({
     "testimony/first_person",
     # causal subtypes
     "causal/connector",
+    # TB-15: enrichment subtypes — single-provider consumption wiring.
+    # These are evidence from an external provider (Apollo/Clearbit/etc.),
+    # surfaced via core/enrichment.py:enrichment_to_spans(). Provenance is
+    # carried in the span.text field (provider=<id>; <field>=<value>).
+    "enrichment/employee_count",
+    "enrichment/funding_stage",
+    "enrichment/industry_class",
+    "enrichment/decision_maker_confirmed",
 })
 
 _VALID_MISSING_SUBTYPES = frozenset({
@@ -125,12 +133,13 @@ def enforce_law_zero(
         violations += len(scored.pain_points)
         scored.pain_points = []
 
-    # 5. confidence bounds + thin-scrape hard floor
-    if not (0.0 <= se.confidence <= 1.0):
-        se.confidence = round(_clamp(se.confidence, 0.0, 1.0), 2)
+    # 5. signal_density bounds + thin-scrape hard floor
+    #    (TB-17B: renamed from confidence; structural ratio, not probability)
+    if not (0.0 <= se.signal_density <= 1.0):
+        se.signal_density = round(_clamp(se.signal_density, 0.0, 1.0), 2)
         violations += 1
-    if thin_scrape and se.confidence > 0.2:
-        se.confidence = 0.2
+    if thin_scrape and se.signal_density > 0.2:
+        se.signal_density = 0.2
         violations += 1
 
     # 6. budget_likelihood enum
@@ -169,6 +178,20 @@ def enforce_law_zero(
     if scored.lead_score != expected:
         scored.lead_score = expected
         violations += 1
+
+    # 10. TB-17A: predicted_quality must be a float in [0.0, 1.0].
+    # The TB-P2 logistic bounds output to [0.01, 0.99] internally, but
+    # if the field arrives wrong-typed or out-of-range, clamp it. Default
+    # to 0.5 (neutral) on type error rather than 0.0 (which would mislead).
+    pq = getattr(scored, "predicted_quality", 0.5)
+    if not isinstance(pq, (int, float)) or isinstance(pq, bool):
+        scored.predicted_quality = 0.5
+        violations += 1
+    else:
+        clamped = round(_clamp(float(pq), 0.0, 1.0), 4)
+        if clamped != pq:
+            scored.predicted_quality = clamped
+            violations += 1
 
     return scored, violations
 

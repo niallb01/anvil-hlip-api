@@ -43,12 +43,19 @@ class ScrapedInput:
 
 @dataclass
 class SignalEvidence:
-    """Signal extraction record. Shape matches SCHEMA.json."""
+    """Signal extraction record. Shape matches SCHEMA.json.
+
+    `signal_density` (renamed from `confidence` at TB-17B): a structural
+    ratio of corroborating evidence found in the input — verified count
+    plus half the weak count, divided by total spans, clamped to
+    [0.2, 0.8]. NOT a probability. For the calibrated conversion
+    probability, see `ScoredOutput.predicted_quality` (TB-17A).
+    """
 
     verified: List[str] = field(default_factory=list)
     weak: List[str] = field(default_factory=list)
     missing: List[str] = field(default_factory=list)
-    confidence: float = 0.0
+    signal_density: float = 0.0
     thin_scrape: bool = False
 
 
@@ -65,6 +72,7 @@ class ScoredOutput:
     pain_points: List[str] = field(default_factory=list)
     budget_likelihood: str = "low"      # "high" | "medium" | "low"
     decision_maker: bool = False
+    predicted_quality: float = 0.5      # TB-17A: calibrated conversion probability
     rationale: str = ""
     signal_evidence: SignalEvidence = field(default_factory=SignalEvidence)
 

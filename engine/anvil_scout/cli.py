@@ -41,7 +41,7 @@ from anvil_scout import (
 )
 from anvil_scout.core.input_adapter import prepare_text
 from anvil_scout.core.detectors import run_all_detectors, hit_counts
-from anvil_scout.core.classifier import classify_signals, compute_confidence
+from anvil_scout.core.classifier import classify_signals, compute_signal_density
 from anvil_scout.core.scorer import (
     budget_likelihood_category,
     decision_maker_flag,
@@ -125,16 +125,61 @@ def _emit_stub_output(prepared, inp: ScrapedInput, adapters=None) -> ScoredOutpu
             # Strip-don't-raise: adapter failure falls back to no filter.
             pass
 
+    # ── TB-15/TB-16: fetch enrichment EARLY so its spans can flow through
+    # the same classifier / Law-0 / scorer pipeline as detector spans. When
+    # the default StubProvider is in use, all results report available=False
+    # and enrichment_to_spans returns [] for each → byte-identical to
+    # v0.1.0/TB14A.
+    #
+    # TB-16: dispatch to ALL configured providers via the router; collect
+    # ALL results; produce one span set per result (audit trail preserves
+    # per-provider provenance); merge results into a single enrichment
+    # object for the scorer (first non-None per field wins).
+    #
+    # Strip-don't-raise: router-level + per-provider exception handling
+    # already lives inside EnrichmentRouter.fetch_all; outer guard here is
+    # belt-and-braces against any unexpected import-time failure.
+    enrichment_results = []
+    try:
+        from anvil_scout.core.enrichment import get_providers
+        from anvil_scout.core.enrichment_router import (
+            EnrichmentRouter, merge_results,
+        )
+        router = EnrichmentRouter(providers=get_providers())
+        enrichment_results = router.fetch_all(
+            company=inp.company, website_url=inp.website_url,
+        )
+        enrichment = merge_results(enrichment_results)
+    except Exception as _router_exc:
+        from anvil_scout.core.enrichment import EnrichmentResult
+        enrichment = EnrichmentResult(
+            available=False,
+            reason=f"router error: {type(_router_exc).__name__}",
+        )
+
+    try:
+        from anvil_scout.core.enrichment import enrichment_to_spans
+        enrichment_spans = []
+        # TB-16: spans from EVERY result, not just merged.
+        # Each enrichment_to_spans call preserves the source provider_id.
+        for r in enrichment_results:
+            enrichment_spans.extend(enrichment_to_spans(r))
+    except Exception:
+        enrichment_spans = []   # strip-don't-raise
+
+    spans = list(spans) + list(enrichment_spans)
+
     counts = hit_counts(spans)
 
     # Classifier: spans → V/W/M.
     verified, weak, missing = classify_signals(spans)
 
-    # Scorer: spans + title → 5 channel scores with Law-II gates.
+    # Scorer: spans + title + enrichment → 5 channel scores with Law-II gates.
     # TB-09: prepared.text passed through for context modifiers.
-    channel_scores = score_all_channels(spans, inp, prepared.text)
+    # TB-15: enrichment passed through for company_size_fit + seniority lifts.
+    channel_scores = score_all_channels(spans, inp, prepared.text, enrichment)
 
-    confidence = compute_confidence(
+    signal_density = compute_signal_density(
         thin_scrape=prepared.thin_scrape,
         verified_count=len(verified),
         weak_count=len(weak),
@@ -170,15 +215,13 @@ def _emit_stub_output(prepared, inp: ScrapedInput, adapters=None) -> ScoredOutpu
         verified=verified,
         weak=weak,
         missing=missing,
-        confidence=confidence,
+        signal_density=signal_density,
         thin_scrape=prepared.thin_scrape,
     )
 
     # ── Law-0 emission wrapper: audit + strip ungrounded ──
     out, violations = enforce_law_zero(out, spans, prepared.thin_scrape)
 
-    # ── Enrichment: call current provider (default StubProvider → unavailable) ──
-    enrichment = get_provider().fetch(company=inp.company, website_url=inp.website_url)
     # Internal-only hint used by the predictive memory tail. It is not part
     # of ScoredOutput.to_dict(), so the public schema stays unchanged.
     try:
@@ -206,7 +249,7 @@ def _emit_stub_output(prepared, inp: ScrapedInput, adapters=None) -> ScoredOutpu
         f"budget_likelihood_score={out.budget_likelihood_score}, "
         f"growth_signals={out.growth_signals}. "
         f"lead_score={out.lead_score}/100. "
-        f"Confidence={out.signal_evidence.confidence} (capped at 0.8 — uncalibrated). "
+        f"Signal_density={out.signal_evidence.signal_density} (capped at 0.8 — structural ratio, NOT a probability — see predicted_quality). "
         f"Enrichment: {enrichment.short_summary()}. "
         "pain_points left empty (no LLM-narrative module in v1)."
     )
@@ -272,6 +315,39 @@ def run_once(
 
     # TB-06: runtime schema validation against SCHEMA.json. Strip-don't-raise.
     payload = out.to_dict()
+
+    # ── TB-17A: predicted_quality from the existing TB-P2 logistic ──
+    # Sourced from daedalus/predictive.py:predict_from_state which:
+    #   - with no state / no outcomes → sigmoid((lead_score - 50)/17.5)
+    #     (a soft transform of the rubric: 0.85 @ 80, 0.50 @ 50, 0.15 @ 20)
+    #   - with outcomes recorded (TB-P2 LEARNING mode) → calibrated probability
+    # Lazy import keeps daedalus off the default partner-facing import path.
+    # Strip-don't-raise: any failure leaves the dataclass default 0.5.
+    pq_updates_seen = 0
+    try:
+        from anvil_scout.daedalus.predictive import predict_from_state
+        state_for_pred = state_snapshot if state_snapshot is not None else {}
+        receipt = predict_from_state(payload, state_for_pred)
+        payload["predicted_quality"] = round(float(receipt.p_quality), 4)
+        pq_updates_seen = int(receipt.model_updates_seen)
+    except Exception:
+        payload.setdefault("predicted_quality", 0.5)
+
+    # Annotate rationale with a brief predicted_quality note. Whether the
+    # model is calibrated (outcomes seen > 0) or rubric-derived is part of
+    # the honest disclosure.
+    pq_value = payload.get("predicted_quality", 0.5)
+    if pq_updates_seen > 0:
+        pq_note = (
+            f" predicted_quality={pq_value:.2f} "
+            f"(calibrated against {pq_updates_seen} outcome update(s))."
+        )
+    else:
+        pq_note = (
+            f" predicted_quality={pq_value:.2f} "
+            f"(rubric-derived; no outcome calibration yet)."
+        )
+    payload["rationale"] = (payload.get("rationale", "") or "") + pq_note
 
     # TB-P2: optional predictive calibration. This is explicit and opt-in;
     # default output remains byte-identical to v0.1.0/TB-14A.

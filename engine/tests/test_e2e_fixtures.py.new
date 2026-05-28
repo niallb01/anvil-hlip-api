@@ -1,0 +1,192 @@
+"""TB-08 — end-to-end fixture tests.
+
+Parameterised across 10 representative inputs. Asserts INVARIANTS (must
+always hold) rather than specific score values (uncalibrated heuristic
+drift is expected and acceptable until TB-09).
+
+If a test here fires, something structural broke. Pipeline crashed, schema
+shape drifted, Law-0 wrapper started stripping clean content, channel
+scoring started emitting out-of-range values, or determinism broke.
+"""
+
+import json
+import os
+import pytest
+
+from anvil_scout.cli import run_once
+from anvil_scout.core.enrichment import reset_provider
+from anvil_scout.core.schema_validator import validate_output
+
+
+FIXTURE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "data", "e2e_fixtures",
+)
+
+
+def _list_fixtures():
+    """Discover fixture files dynamically — drop-in for new fixtures."""
+    if not os.path.isdir(FIXTURE_DIR):
+        return []
+    return sorted(
+        f for f in os.listdir(FIXTURE_DIR)
+        if f.endswith(".json") and f[:2].isdigit()
+    )
+
+
+FIXTURE_NAMES = _list_fixtures()
+
+
+# Reset enrichment provider before every test (JB-07-4 hygiene).
+@pytest.fixture(autouse=True)
+def _isolate_provider():
+    reset_provider()
+    yield
+    reset_provider()
+
+
+# ─── helpers ────────────────────────────────────────────────────────────────
+
+def _load_input(name: str) -> str:
+    """Read a fixture file and return its JSON-string form for run_once()."""
+    path = os.path.join(FIXTURE_DIR, name)
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def _run(name: str) -> dict:
+    raw = _load_input(name)
+    return json.loads(run_once(raw))
+
+
+# ─── invariant assertions ──────────────────────────────────────────────────
+
+@pytest.mark.parametrize("fixture", FIXTURE_NAMES)
+def test_no_crash(fixture):
+    """CLI must not crash on any fixture."""
+    raw = _load_input(fixture)
+    out_str = run_once(raw)
+    # Output must parse as JSON
+    out = json.loads(out_str)
+    assert isinstance(out, dict)
+
+
+@pytest.mark.parametrize("fixture", FIXTURE_NAMES)
+def test_schema_valid(fixture):
+    """Every fixture's output must validate against SCHEMA.json."""
+    out = _run(fixture)
+    is_valid, errors = validate_output(out)
+    assert is_valid, f"{fixture}: schema errors={errors}"
+
+
+@pytest.mark.parametrize("fixture", FIXTURE_NAMES)
+def test_no_annotation_tags_in_rationale(fixture):
+    """Clean pipeline runs must have NO [Schema-violation:] or [Law-0:] tags."""
+    out = _run(fixture)
+    rationale = out["rationale"]
+    assert "[Schema-violation:" not in rationale, f"{fixture}: {rationale[-200:]}"
+    assert "[Law-0:" not in rationale, f"{fixture}: {rationale[-200:]}"
+
+
+@pytest.mark.parametrize("fixture", FIXTURE_NAMES)
+def test_required_fields_present(fixture):
+    """All top-level required SCHEMA fields must be present."""
+    out = _run(fixture)
+    for f in (
+        "lead_score", "industry_fit", "company_size_fit",
+        "decision_maker_seniority", "budget_likelihood_score", "growth_signals",
+        "pain_points", "budget_likelihood", "decision_maker",
+        "rationale", "signal_evidence",
+    ):
+        assert f in out, f"{fixture}: missing field {f}"
+
+
+@pytest.mark.parametrize("fixture", FIXTURE_NAMES)
+def test_channel_ranges(fixture):
+    """Channel scores must respect PDF rubric ranges."""
+    out = _run(fixture)
+    assert 0 <= out["lead_score"] <= 100, f"{fixture}: lead_score={out['lead_score']}"
+    assert 0 <= out["industry_fit"] <= 20
+    assert 0 <= out["company_size_fit"] <= 25
+    assert 0 <= out["decision_maker_seniority"] <= 20
+    assert 0 <= out["budget_likelihood_score"] <= 20
+    assert 0 <= out["growth_signals"] <= 15
+
+
+@pytest.mark.parametrize("fixture", FIXTURE_NAMES)
+def test_lead_score_equals_channel_sum(fixture):
+    """lead_score must equal the sum of the 5 channels."""
+    out = _run(fixture)
+    expected = (
+        out["industry_fit"]
+        + out["company_size_fit"]
+        + out["decision_maker_seniority"]
+        + out["budget_likelihood_score"]
+        + out["growth_signals"]
+    )
+    assert out["lead_score"] == expected, f"{fixture}: lead_score={out['lead_score']} sum={expected}"
+
+
+@pytest.mark.parametrize("fixture", FIXTURE_NAMES)
+def test_derived_flags_correct_types(fixture):
+    """budget_likelihood is one of the enum; decision_maker is bool."""
+    out = _run(fixture)
+    assert out["budget_likelihood"] in ("high", "medium", "low")
+    assert isinstance(out["decision_maker"], bool)
+
+
+@pytest.mark.parametrize("fixture", FIXTURE_NAMES)
+def test_pain_points_empty(fixture):
+    """v1 contract: pain_points is always []."""
+    out = _run(fixture)
+    assert out["pain_points"] == []
+
+
+@pytest.mark.parametrize("fixture", FIXTURE_NAMES)
+def test_signal_evidence_shape(fixture):
+    """signal_evidence has the right shape and bounded confidence."""
+    out = _run(fixture)
+    se = out["signal_evidence"]
+    for f in ("verified", "weak", "missing", "signal_density", "thin_scrape"):
+        assert f in se, f"{fixture}: signal_evidence missing {f}"
+    assert 0.0 <= se["signal_density"] <= 1.0
+    assert isinstance(se["thin_scrape"], bool)
+    assert isinstance(se["verified"], list)
+    assert isinstance(se["weak"], list)
+    assert isinstance(se["missing"], list)
+
+
+@pytest.mark.parametrize("fixture", FIXTURE_NAMES)
+def test_determinism(fixture):
+    """Running the same fixture twice produces identical output (JB-08-4)."""
+    out1 = _run(fixture)
+    out2 = _run(fixture)
+    assert out1 == out2, f"{fixture}: non-deterministic"
+
+
+# ─── specific fixture sanity ───────────────────────────────────────────────
+
+def test_paywalled_thin_scrape_triggered():
+    """Fixture 06: short content under 500 chars → thin_scrape=true."""
+    out = _run("06_paywalled_thin_content.json")
+    assert out["signal_evidence"]["thin_scrape"] is True
+    # Thin scrape caps confidence at 0.2
+    assert out["signal_evidence"]["signal_density"] <= 0.2
+    # All data channels gate to zero (Law II) — only seniority can contribute
+    assert out["industry_fit"] == 0
+    assert out["company_size_fit"] == 0
+    assert out["budget_likelihood_score"] == 0
+    assert out["growth_signals"] == 0
+
+
+def test_nonprofit_unicode_handled():
+    """Fixture 09: non-ASCII content (em-dashes, accented chars) does not crash."""
+    out = _run("09_nonprofit_foundation.json")
+    assert isinstance(out["lead_score"], int)
+    # Output is valid UTF-8 JSON
+    json.dumps(out, ensure_ascii=False)
+
+
+def test_total_fixture_count():
+    """Sanity: we ship 10 fixtures."""
+    assert len(FIXTURE_NAMES) == 10

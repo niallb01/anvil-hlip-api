@@ -1,0 +1,72 @@
+"""TB-00 smoke test — assert harness is alive."""
+
+import json
+import os
+
+
+def test_package_imports():
+    """Anvil-Scout package must import without error."""
+    import anvil_scout
+    assert anvil_scout.__version__ == "0.1.0-TB10"
+
+
+def test_contracts_reachable():
+    """Input and output contracts must be importable from the package root."""
+    from anvil_scout import ScrapedInput, ScoredOutput, SignalEvidence
+    # Construct empties — should not raise
+    inp = ScrapedInput(name="", title="", company="", website_url="", website_content="")
+    out = ScoredOutput()
+    ev = SignalEvidence()
+    assert inp.name == ""
+    assert out.lead_score == 0
+    assert ev.signal_density == 0.0
+    assert ev.thin_scrape is False
+
+
+def test_contracts_roundtrip():
+    """Input dataclass must round-trip via dict."""
+    from anvil_scout import ScrapedInput
+    d = {
+        "name": "Jane Doe",
+        "title": "Head of Sales",
+        "company": "Acme Co",
+        "website_url": "https://acme.example",
+        "website_content": "We are Acme.",
+    }
+    inp = ScrapedInput.from_dict(d)
+    assert inp.to_dict() == d
+
+
+def test_schema_parses():
+    """SCHEMA.json must be valid JSON and contain the documented top-level fields."""
+    schema_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "SCHEMA.json",
+    )
+    with open(schema_path, "r", encoding="utf-8") as f:
+        schema = json.load(f)
+
+    required = schema.get("required", [])
+    expected = {
+        "lead_score",
+        "industry_fit",
+        "company_size_fit",
+        "decision_maker_seniority",
+        "budget_likelihood_score",
+        "growth_signals",
+        "pain_points",
+        "budget_likelihood",
+        "decision_maker",
+        "predicted_quality",
+        "rationale",
+        "signal_evidence",
+    }
+    assert set(required) == expected
+
+
+def test_law_files_present():
+    """Architectural invariants must be on disk and findable by future TBs."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for fname in ("README.md", "LAWS.md", "TASKBOOK.md", "BLIP_LOG.md", "SCHEMA.json"):
+        path = os.path.join(repo_root, fname)
+        assert os.path.exists(path), f"missing: {fname}"

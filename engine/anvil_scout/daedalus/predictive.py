@@ -51,7 +51,7 @@ FEATURE_NAMES: Tuple[str, ...] = (
     "budget_likelihood_score",
     "growth_signals",
     "lead_score",
-    "confidence",
+    "signal_density",
     "verified_density",
     "weak_density",
     "missing_density",
@@ -212,6 +212,19 @@ def ensure_prediction_state(state: MutableMapping[str, Any]) -> MutableMapping[s
     model.setdefault("updates_seen", 0)
     model.setdefault("last_update_at", None)
     weights = model.setdefault("weights", {})
+
+    # TB-17B state migration: legacy state files were trained under
+    # weights["confidence"]. If the old key exists and the new one
+    # doesn't, preserve the learned weight under the new name. This
+    # MUST run BEFORE the FEATURE_NAMES seeding loop below, otherwise
+    # signal_density gets initialised to 0.0 and the learned value is lost.
+    if "confidence" in weights and "signal_density" not in weights:
+        try:
+            weights["signal_density"] = float(weights["confidence"])
+        except (TypeError, ValueError):
+            weights["signal_density"] = 0.0
+        del weights["confidence"]
+
     for name in FEATURE_NAMES:
         weights.setdefault(name, 0.0)
 
@@ -253,7 +266,7 @@ def features_from_payload(payload: Mapping[str, Any]) -> Dict[str, float]:
         "budget_likelihood_score": _safe_int(payload.get("budget_likelihood_score")) / CHANNEL_MAX["budget_likelihood_score"],
         "growth_signals": _safe_int(payload.get("growth_signals")) / CHANNEL_MAX["growth_signals"],
         "lead_score": _safe_int(payload.get("lead_score")) / 100.0,
-        "confidence": _safe_float(evidence.get("confidence")),
+        "signal_density": _safe_float(evidence.get("signal_density")),
         "verified_density": len(verified) / denom,
         "weak_density": len(weak) / denom,
         "missing_density": len(missing) / denom,
@@ -352,7 +365,7 @@ def store_episode(
         "features": prediction.features,
         "scores": {k: _safe_int(payload.get(k)) for k in CHANNEL_MAX},
         "lead_score": _safe_int(payload.get("lead_score")),
-        "confidence": _safe_float(evidence.get("confidence")),
+        "signal_density": _safe_float(evidence.get("signal_density")),
         "prediction": {
             "p_quality": prediction.p_quality,
             "quality_score": prediction.quality_score,
@@ -391,13 +404,13 @@ def _self_audit_flags(payload: Mapping[str, Any], prediction: PredictionReceipt,
     flags: List[str] = []
     evidence = payload.get("signal_evidence", {}) or {}
     lead_score = _safe_int(payload.get("lead_score"))
-    confidence = _safe_float(evidence.get("confidence"))
+    signal_density = _safe_float(evidence.get("signal_density"))
     thin = bool(evidence.get("thin_scrape"))
 
     if thin and lead_score >= 60:
         flags.append("thin_scrape_high_score")
-    if confidence < 0.3 and lead_score >= 50:
-        flags.append("low_confidence_high_score")
+    if signal_density < 0.3 and lead_score >= 50:
+        flags.append("low_signal_density_high_score")
     if prediction.model_updates_seen > 0:
         raw_prob_score = prediction.quality_score
         if abs(raw_prob_score - lead_score) >= 25:

@@ -27,23 +27,29 @@ from anvil_scout.core.detectors import Span
 _TEXT_TRUNC = 80   # max chars of span.text shown in descriptors
 
 
-# ─── confidence ─────────────────────────────────────────────────────────────
+# ─── signal_density (TB-17B: renamed from compute_confidence) ──────────────
 
-def compute_confidence(
+def compute_signal_density(
     thin_scrape: bool,
     verified_count: int,
     weak_count: int,
     missing_count: int,
 ) -> float:
-    """Uncalibrated heuristic confidence.
+    """Structural signal-density ratio (TB-17B: renamed from confidence).
 
-    Honest discipline:
-      - thin_scrape forces 0.2 (hard Law-0 floor)
-      - no signals at all → 0.3 (we ran but found nothing — not nothing-known)
+    Honest naming: this function computes a STRUCTURAL RATIO of
+    corroborating evidence found in the input — it is NOT a probability
+    of conversion. For that, see `daedalus.predictive.predict_from_state`
+    (exposed as `predicted_quality` in TB-17A).
+
+    Math (unchanged from previous compute_confidence):
+      - thin_scrape forces 0.2 (hard Law-0 floor — refusal under thin evidence)
+      - no signals at all → 0.3 (the parser ran but found nothing —
+        meaningfully different from "we never tried")
       - otherwise: clamp(0.2 + 0.6 * weighted_signal_ratio, 0.2, 0.8)
         where weighted_signal_ratio = (verified + 0.5*weak) / total
-      - 0.8 ceiling is deliberate: without outcome calibration we do not
-        claim ≥ 0.9. Lifting the ceiling is a TB-06+ concern.
+      - 0.8 ceiling is deliberate: a high signal-density ratio is not a
+        guarantee. Lift only with outcome calibration (TB-P2 path).
     """
     if thin_scrape:
         return 0.2
@@ -126,6 +132,14 @@ def classify_signals(spans: List[Span]) -> Tuple[List[str], List[str], List[str]
             verified.append(_describe(s))
             continue
 
+        # TB-15: enrichment spans are direct VERIFIED facts from an external
+        # provider. They are not subject to the testimony/causal co-occurrence
+        # test (their synthetic start=0, end=0 position would otherwise
+        # trigger spurious proximity matches). Provenance is in span.text.
+        if s.kind == "enrichment":
+            verified.append(_describe(s))
+            continue
+
         # testimony or causal: corroborated if any quantity overlaps
         if _has_overlapping_quantity(s, quantity_spans):
             verified.append(_describe(s) + " (corroborated by adjacent quantity)")
@@ -140,4 +154,4 @@ def classify_signals(spans: List[Span]) -> Tuple[List[str], List[str], List[str]
     return verified, weak, missing
 
 
-__all__ = ["classify_signals", "compute_confidence"]
+__all__ = ["classify_signals", "compute_signal_density"]

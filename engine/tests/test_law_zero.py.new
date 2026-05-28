@@ -1,0 +1,379 @@
+"""TB-05 — Law-0 emission wrapper tests.
+
+Goals:
+  - Every strip path covered (verified/weak/missing/pain_points/confidence/
+    budget/decision_maker/channel range/lead_score).
+  - Pass-through preserves clean output unchanged.
+  - Property test: clean pipeline output produces ZERO violations through
+    the wrapper. If this test fires, the classifier output format drifted.
+"""
+
+import json
+import os
+
+from anvil_scout.contracts import ScoredOutput, SignalEvidence, ScrapedInput
+from anvil_scout.cli import run_once
+from anvil_scout.core.detectors import Span, run_all_detectors
+from anvil_scout.core.classifier import classify_signals
+from anvil_scout.core.law_zero import enforce_law_zero
+
+
+def _load_sample(name: str) -> str:
+    path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "data",
+        name,
+    )
+    with open(path, "r", encoding="utf-8") as f:
+        d = json.load(f)
+    return d["website_content"]
+
+
+def _q(subtype, n=1):
+    return [Span(i * 10, i * 10 + 5, "x", "quantity", subtype, 0.9) for i in range(n)]
+
+
+# ─── strip cases ────────────────────────────────────────────────────────────
+
+class TestStripVerified:
+
+    def test_fabricated_verified_entry_stripped(self):
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=["fabricated nonsense without prefix"],
+            weak=[], missing=[], signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.signal_evidence.verified == []
+        assert violations >= 1
+
+    def test_valid_prefix_but_no_matching_span_stripped(self):
+        """Prefix is in the allowed set but no span backs it → still strip."""
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=["quantity/currency: $999"],
+            weak=[], missing=[], signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        # No quantity/currency span exists → stripped
+        assert cleaned.signal_evidence.verified == []
+        assert violations >= 1
+
+    def test_valid_entry_with_matching_span_kept(self):
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=["quantity/currency: $499"],
+            weak=[], missing=[], signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=_q("currency", 1), thin_scrape=False)
+        assert cleaned.signal_evidence.verified == ["quantity/currency: $499"]
+        assert violations == 0
+
+    def test_entry_with_classifier_suffix_kept(self):
+        """Classifier suffixes after the prefix shouldn't break parsing."""
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=["testimony/social_proof: Trusted by 200 customers. (corroborated by adjacent quantity)"],
+            weak=[], missing=[], signal_density=0.5, thin_scrape=False,
+        )
+        spans = [Span(0, 30, "Trusted by 200 customers", "testimony", "social_proof", 0.8)]
+        cleaned, violations = enforce_law_zero(out, spans=spans, thin_scrape=False)
+        assert len(cleaned.signal_evidence.verified) == 1
+        assert violations == 0
+
+
+class TestStripWeak:
+
+    def test_fabricated_weak_stripped(self):
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=["this is just made up"], missing=[],
+            signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.signal_evidence.weak == []
+        assert violations >= 1
+
+
+class TestStripMissing:
+
+    def test_invalid_missing_subtype_stripped(self):
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[],
+            missing=["fakesubtype category absent from page"],
+            signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.signal_evidence.missing == []
+        assert violations >= 1
+
+    def test_valid_missing_kept(self):
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[],
+            missing=[
+                "pricing category absent from page",
+                "hiring category absent from page",
+            ],
+            signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert len(cleaned.signal_evidence.missing) == 2
+        assert violations == 0
+
+
+class TestStripPainPoints:
+
+    def test_pain_points_emptied(self):
+        """v1 contract: pain_points must always be []."""
+        out = ScoredOutput()
+        out.pain_points = ["sales efficiency", "lead quality"]
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[],
+            signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.pain_points == []
+        assert violations >= 2
+
+
+class TestConfidenceBounds:
+
+    def test_confidence_above_1_clamped(self):
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[],
+            signal_density=1.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.signal_evidence.signal_density == 1.0
+        assert violations >= 1
+
+    def test_confidence_below_0_clamped(self):
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[],
+            signal_density=-0.3, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.signal_evidence.signal_density == 0.0
+        assert violations >= 1
+
+    def test_thin_scrape_caps_confidence_at_0_2(self):
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[],
+            signal_density=0.7, thin_scrape=True,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=True)
+        assert cleaned.signal_evidence.signal_density == 0.2
+        assert violations >= 1
+
+    def test_clean_confidence_unchanged(self):
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[],
+            signal_density=0.4, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.signal_evidence.signal_density == 0.4
+        assert violations == 0
+
+
+class TestBudgetEnum:
+
+    def test_invalid_budget_reset_to_low(self):
+        out = ScoredOutput()
+        out.budget_likelihood = "extremely-high"   # not in enum
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[], signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.budget_likelihood == "low"
+        assert violations >= 1
+
+    def test_valid_budget_kept(self):
+        out = ScoredOutput()
+        out.budget_likelihood = "medium"
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[], signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.budget_likelihood == "medium"
+        assert violations == 0
+
+
+class TestDecisionMakerType:
+
+    def test_non_bool_reset_to_false(self):
+        out = ScoredOutput()
+        out.decision_maker = "yes"   # string, not bool
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[], signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.decision_maker is False
+        assert violations >= 1
+
+
+class TestChannelClamp:
+
+    def test_industry_fit_over_20_clamped(self):
+        out = ScoredOutput()
+        out.industry_fit = 99
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[], signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.industry_fit == 20
+        # And lead_score is recomputed to match
+        assert cleaned.lead_score == 20
+        assert violations >= 1
+
+    def test_negative_channel_clamped_to_zero(self):
+        out = ScoredOutput()
+        out.company_size_fit = -5
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[], signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.company_size_fit == 0
+        assert violations >= 1
+
+
+class TestLeadScoreRecompute:
+
+    def test_tampered_lead_score_recomputed(self):
+        out = ScoredOutput()
+        out.industry_fit = 10
+        out.company_size_fit = 10
+        out.decision_maker_seniority = 10
+        out.budget_likelihood_score = 10
+        out.growth_signals = 10
+        out.lead_score = 99   # tampered — actual sum is 50
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[], signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.lead_score == 50
+        assert violations >= 1
+
+    def test_clean_lead_score_unchanged(self):
+        out = ScoredOutput()
+        out.industry_fit = 5
+        out.company_size_fit = 5
+        out.decision_maker_seniority = 5
+        out.budget_likelihood_score = 5
+        out.growth_signals = 5
+        out.lead_score = 25
+        out.signal_evidence = SignalEvidence(
+            verified=[], weak=[], missing=[], signal_density=0.5, thin_scrape=False,
+        )
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        assert cleaned.lead_score == 25
+        assert violations == 0
+
+
+# ─── pass-through and property tests ───────────────────────────────────────
+
+class TestPassThrough:
+
+    def test_clean_classifier_output_produces_zero_violations(self):
+        """JB-05-1: end-to-end pass through with real pipeline → 0 violations.
+
+        If this test ever fires, the classifier's output prefix format has
+        drifted from `<kind>/<subtype>:`. Fix the wrapper's _VALID_VW_PREFIXES
+        or fix the classifier.
+        """
+        text = _load_sample("sample_input.json")
+        spans = run_all_detectors(text)
+        verified, weak, missing = classify_signals(spans)
+
+        out = ScoredOutput()
+        out.signal_evidence = SignalEvidence(
+            verified=verified, weak=weak, missing=missing,
+            signal_density=0.8, thin_scrape=False,
+        )
+        out.industry_fit = 20
+        out.company_size_fit = 10
+        out.decision_maker_seniority = 20
+        out.budget_likelihood_score = 20
+        out.growth_signals = 10
+        out.lead_score = 80
+        out.budget_likelihood = "high"
+        out.decision_maker = True
+        out.pain_points = []
+
+        cleaned, violations = enforce_law_zero(out, spans=spans, thin_scrape=False)
+        assert violations == 0, (
+            f"Clean classifier output should pass through with 0 violations; got {violations}.\n"
+            "If the classifier output format changed, sync _VALID_VW_PREFIXES."
+        )
+        # Same content survives
+        assert cleaned.lead_score == 80
+        assert len(cleaned.signal_evidence.verified) == len(verified)
+
+
+class TestFuzz:
+
+    def test_compound_tampering(self):
+        """Multiple tamperings at once → all caught, output is clean."""
+        out = ScoredOutput()
+        out.industry_fit = 99             # over-range
+        out.company_size_fit = -10        # negative
+        out.decision_maker_seniority = 20
+        out.budget_likelihood_score = 20
+        out.growth_signals = 15
+        out.lead_score = 1000             # tampered
+        out.budget_likelihood = "infinite"  # invalid enum
+        out.decision_maker = 1              # not bool
+        out.pain_points = ["invented", "fabricated", "made-up"]
+        out.signal_evidence = SignalEvidence(
+            verified=["nope", "quantity/currency: $999"],   # both wrong
+            weak=["pure fiction"],
+            missing=["uninstalled category absent from page"],
+            signal_density=2.5,
+            thin_scrape=False,
+        )
+
+        cleaned, violations = enforce_law_zero(out, spans=[], thin_scrape=False)
+        # Lots of violations expected
+        assert violations >= 10
+        # Output is clean
+        assert 0 <= cleaned.industry_fit <= 20
+        assert 0 <= cleaned.company_size_fit <= 25
+        assert cleaned.budget_likelihood in ("high", "medium", "low")
+        assert isinstance(cleaned.decision_maker, bool)
+        assert cleaned.pain_points == []
+        assert cleaned.signal_evidence.verified == []
+        assert cleaned.signal_evidence.weak == []
+        assert cleaned.signal_evidence.missing == []
+        assert 0.0 <= cleaned.signal_evidence.signal_density <= 1.0
+        # lead_score recomputed correctly
+        assert cleaned.lead_score == (
+            cleaned.industry_fit
+            + cleaned.company_size_fit
+            + cleaned.decision_maker_seniority
+            + cleaned.budget_likelihood_score
+            + cleaned.growth_signals
+        )
+
+
+# ─── integration via CLI ───────────────────────────────────────────────────
+
+class TestCLIIntegration:
+
+    def test_real_cli_run_has_zero_violations(self):
+        """The real CLI pipeline must pass through Law-0 with 0 violations."""
+        inp = json.dumps({
+            "name": "Jane Doe",
+            "title": "Head of Sales",
+            "company": "Acme",
+            "website_url": "",
+            "website_content": _load_sample("sample_input.json"),
+        })
+        out = json.loads(run_once(inp))
+        # If violations occurred, rationale would say so. Clean run → no [Law-0:] tag.
+        # (CLI adds the tag only when violations > 0; see test_cli.py.)
+        assert "[Law-0:" not in out["rationale"]

@@ -1,0 +1,472 @@
+"""TB-07 — CLI runner tests (extends TB-06)."""
+
+import json
+
+from anvil_scout.cli import run_once
+
+
+def test_cli_valid_input_produces_valid_output():
+    inp = json.dumps({
+        "name": "Jane Doe",
+        "title": "Head of Sales",
+        "company": "Acme Co",
+        "website_url": "https://acme.example",
+        "website_content": "Acme is a B2B SaaS platform helping companies grow. " * 20,
+    })
+    raw_out = run_once(inp)
+    out = json.loads(raw_out)
+
+    # Required fields present
+    for f in (
+        "lead_score",
+        "industry_fit",
+        "company_size_fit",
+        "decision_maker_seniority",
+        "budget_likelihood_score",
+        "growth_signals",
+        "pain_points",
+        "budget_likelihood",
+        "decision_maker",
+        "rationale",
+        "signal_evidence",
+    ):
+        assert f in out, f"missing field: {f}"
+
+    # TB-04: channel scores now in range per PDF rubric.
+    assert 0 <= out["lead_score"] <= 100
+    assert 0 <= out["industry_fit"] <= 20
+    assert 0 <= out["company_size_fit"] <= 25
+    assert 0 <= out["decision_maker_seniority"] <= 20
+    assert 0 <= out["budget_likelihood_score"] <= 20
+    assert 0 <= out["growth_signals"] <= 15
+
+    # "Head of Sales" title → seniority = 20, decision_maker = True
+    assert out["decision_maker_seniority"] == 20
+    assert out["decision_maker"] is True
+
+    # pain_points always empty in v1 (no LLM-narrative)
+    assert out["pain_points"] == []
+
+    # signal_evidence shape correct
+    se = out["signal_evidence"]
+    for f in ("verified", "weak", "missing", "signal_density", "thin_scrape"):
+        assert f in se
+    assert se["thin_scrape"] is False  # content was 1000+ chars
+    assert 0.0 <= se["signal_density"] <= 1.0
+
+
+def test_cli_thin_scrape_caps_confidence():
+    """Per Law 0: < 500 cleaned chars → confidence ≤ 0.2 and thin_scrape=True."""
+    inp = json.dumps({
+        "name": "X",
+        "title": "Y",
+        "company": "Z",
+        "website_url": "",
+        "website_content": "Tiny.",
+    })
+    out = json.loads(run_once(inp))
+    se = out["signal_evidence"]
+    assert se["thin_scrape"] is True
+    assert se["signal_density"] <= 0.2
+
+
+def test_cli_invalid_json_returns_error_object():
+    out = json.loads(run_once("{not json"))
+    assert "error" in out
+    assert "invalid JSON" in out["error"]
+
+
+def test_cli_non_object_input_returns_error():
+    out = json.loads(run_once("[1, 2, 3]"))
+    assert "error" in out
+
+
+def test_cli_empty_dict_input_still_returns_valid_shape():
+    """Empty input → honest empty output, not a crash."""
+    out = json.loads(run_once("{}"))
+    assert out["lead_score"] == 0
+    assert out["signal_evidence"]["thin_scrape"] is True
+
+
+def test_cli_html_content_is_cleaned():
+    html = "<html><body>" + ("<p>Acme provides B2B services.</p>" * 30) + "</body></html>"
+    inp = json.dumps({
+        "name": "", "title": "", "company": "",
+        "website_url": "", "website_content": html,
+    })
+    out = json.loads(run_once(inp))
+    # Rationale carries source_mode evidence
+    assert "source_mode=content" in out["rationale"]
+    # cleaned text was long enough to clear thin-scrape
+    assert out["signal_evidence"]["thin_scrape"] is False
+
+
+# ─── TB-02 additions ────────────────────────────────────────────────────────
+
+def test_cli_rationale_includes_detector_hit_counts():
+    """TB-02: detector hit counts must appear in the rationale."""
+    inp = json.dumps({
+        "name": "Jane",
+        "title": "Head of Sales",
+        "company": "Acme",
+        "website_url": "",
+        "website_content": (
+            "Acme is the leading B2B SaaS platform. Founded in 2019. "
+            "Trusted by over 200 customers. Pricing starts at $499/month. "
+            "We are hiring across engineering, sales, and customer success. "
+            "Our automation enables teams to scale revenue."
+        ),
+    })
+    out = json.loads(run_once(inp))
+    rationale = out["rationale"]
+    # Detector counts present
+    assert "testimony=" in rationale
+    assert "quantity=" in rationale
+    assert "causal=" in rationale
+    assert "missing=" in rationale
+    # At least one of each kind should fire on this rich text
+    # (we don't assert exact counts — those are detector concerns, not CLI concerns)
+
+
+def test_cli_empty_content_shows_missing_count():
+    """Empty content → all 5 categories missing → rationale shows missing=5."""
+    inp = json.dumps({
+        "name": "", "title": "", "company": "",
+        "website_url": "", "website_content": "",
+    })
+    out = json.loads(run_once(inp))
+    assert "missing=5" in out["rationale"]
+
+
+# ─── TB-03 additions ────────────────────────────────────────────────────────
+
+def test_cli_signal_evidence_populated_on_rich_text():
+    """TB-03: classifier populates verified/weak/missing lists with real entries."""
+    inp = json.dumps({
+        "name": "Jane",
+        "title": "Head of Sales",
+        "company": "Acme",
+        "website_url": "",
+        "website_content": (
+            "Acme is the leading B2B SaaS platform helping mid-market companies "
+            "streamline their sales process and improve lead quality. "
+            "Founded in 2019 and headquartered in London with a distributed team. "
+            "Trusted by over 200 customers including Globex, Initech, and Hooli. "
+            "Pricing starts at $499/month for the Growth tier and scales to custom "
+            "Enterprise pricing for larger deployments. "
+            "We are hiring across engineering, sales, and customer success. "
+            "Our automation enables teams to scale revenue by 40%. "
+            "Read our case studies and team page for more details on integrations."
+        ),
+    })
+    out = json.loads(run_once(inp))
+    se = out["signal_evidence"]
+    # Rich text → at least one VERIFIED entry (quantity hits guarantee this)
+    assert len(se["verified"]) > 0
+    # All 5 B2B categories covered → no missing
+    assert len(se["missing"]) == 0
+    # Confidence above floor, below uncalibrated ceiling
+    assert 0.3 < se["signal_density"] <= 0.8
+
+
+def test_cli_empty_content_classifier_emits_five_missing():
+    """TB-03: empty content → classifier emits the 5 absence strings as MISSING."""
+    inp = json.dumps({
+        "name": "", "title": "", "company": "",
+        "website_url": "", "website_content": "",
+    })
+    out = json.loads(run_once(inp))
+    se = out["signal_evidence"]
+    assert len(se["missing"]) == 5
+    assert len(se["verified"]) == 0
+    # "category absent" wording present
+    assert any("category absent" in m for m in se["missing"])
+
+
+def test_cli_thin_scrape_still_caps_confidence_after_classifier():
+    """TB-03: even if classifier finds signals, thin_scrape floors confidence at 0.2."""
+    inp = json.dumps({
+        "name": "", "title": "", "company": "",
+        "website_url": "",
+        "website_content": "Founded in 2019. $499/month.",  # 28 chars, has quantity hits
+    })
+    out = json.loads(run_once(inp))
+    se = out["signal_evidence"]
+    assert se["thin_scrape"] is True
+    assert se["signal_density"] == 0.2  # hard floor
+
+
+def test_cli_rationale_includes_classifier_summary():
+    """TB-03: rationale summarises classifier output (verified=N, weak=N, missing=N)."""
+    inp = json.dumps({
+        "name": "", "title": "", "company": "",
+        "website_url": "",
+        "website_content": "Acme is the leading platform. Trusted by over 200 customers. Pricing starts at $499. We are hiring engineers. Founded in 2019 with case studies and integrations available.",
+    })
+    out = json.loads(run_once(inp))
+    rationale = out["rationale"]
+    assert "verified=" in rationale
+    assert "weak=" in rationale
+    assert "Signal_density=" in rationale
+
+
+# ─── TB-04 additions ────────────────────────────────────────────────────────
+
+def test_cli_full_sample_produces_substantial_lead_score():
+    """TB-04: rich text + senior title should produce a meaningful lead_score."""
+    inp = json.dumps({
+        "name": "Jane Doe",
+        "title": "Head of Sales",
+        "company": "Acme",
+        "website_url": "",
+        "website_content": (
+            "Acme is the leading B2B SaaS platform helping mid-market companies "
+            "streamline their sales process and improve lead quality. "
+            "Founded in 2019 and headquartered in London with a distributed team. "
+            "Trusted by over 200 customers including Globex, Initech, and Hooli. "
+            "Pricing starts at $499/month for the Growth tier and scales to custom "
+            "Enterprise pricing for larger deployments. "
+            "Enterprise customers get SSO, audit logs, and a 99.95% uptime SLA. "
+            "We are hiring across engineering, sales, and customer success. "
+            "Our automation enables teams to scale revenue by 40%. "
+            "Read our case studies and team page for more details on integrations."
+        ),
+    })
+    out = json.loads(run_once(inp))
+    # All 5 channel scores should be non-zero on rich content + senior title
+    assert out["industry_fit"] > 0
+    assert out["company_size_fit"] > 0
+    assert out["decision_maker_seniority"] == 20
+    assert out["budget_likelihood_score"] > 0
+    assert out["growth_signals"] > 0
+    # Substantial total
+    assert out["lead_score"] >= 60
+    # Derived flags
+    assert out["decision_maker"] is True
+    assert out["budget_likelihood"] in ("high", "medium")
+
+
+def test_cli_thin_sample_no_title_law_ii_gates_to_zero():
+    """TB-04 / Law II: thin sample + no title → all channels evidence_count=0 → all zero."""
+    inp = json.dumps({
+        "name": "", "title": "", "company": "",
+        "website_url": "",
+        "website_content": "Coming soon. We're building something cool.",
+    })
+    out = json.loads(run_once(inp))
+    # Law-II gate fires across the board
+    assert out["industry_fit"] == 0
+    assert out["company_size_fit"] == 0
+    assert out["decision_maker_seniority"] == 0
+    assert out["budget_likelihood_score"] == 0
+    assert out["growth_signals"] == 0
+    assert out["lead_score"] == 0
+    assert out["decision_maker"] is False
+    assert out["budget_likelihood"] == "low"
+
+
+def test_cli_pain_points_always_empty_v1():
+    """TB-04: pain_points must be empty list. No fabrication."""
+    inp = json.dumps({
+        "name": "Jane", "title": "CEO", "company": "Acme",
+        "website_url": "",
+        "website_content": "Long content about pain points around sales efficiency and lead quality. " * 20,
+    })
+    out = json.loads(run_once(inp))
+    assert out["pain_points"] == []
+
+
+def test_cli_rationale_includes_channel_scores():
+    """TB-04: rationale must include all 5 channel scores."""
+    inp = json.dumps({
+        "name": "Jane", "title": "Head of Sales", "company": "Acme",
+        "website_url": "",
+        "website_content": "Acme is a leading B2B SaaS platform. " * 20,
+    })
+    out = json.loads(run_once(inp))
+    rationale = out["rationale"]
+    assert "industry_fit=" in rationale
+    assert "company_size_fit=" in rationale
+    assert "decision_maker_seniority=" in rationale
+    assert "budget_likelihood_score=" in rationale
+    assert "growth_signals=" in rationale
+    assert "lead_score=" in rationale
+
+
+def test_cli_decision_maker_flag_matches_seniority_threshold():
+    """TB-04: decision_maker is True iff seniority >= 15."""
+    # IC role → seniority 5 → decision_maker False
+    out_ic = json.loads(run_once(json.dumps({
+        "name": "", "title": "Software Engineer", "company": "",
+        "website_url": "", "website_content": "Padding text " * 50,
+    })))
+    assert out_ic["decision_maker_seniority"] == 5
+    assert out_ic["decision_maker"] is False
+
+    # Senior role → seniority 15 → decision_maker True
+    out_senior = json.loads(run_once(json.dumps({
+        "name": "", "title": "Senior Sales Manager", "company": "",
+        "website_url": "", "website_content": "Padding text " * 50,
+    })))
+    assert out_senior["decision_maker_seniority"] == 15
+    assert out_senior["decision_maker"] is True
+
+
+def test_cli_lead_score_equals_channel_sum():
+    """TB-04: lead_score must equal the sum of the 5 channels."""
+    inp = json.dumps({
+        "name": "Jane", "title": "Director of Sales", "company": "Acme",
+        "website_url": "",
+        "website_content": (
+            "Acme is the leading B2B SaaS platform. Pricing starts at $499/month. "
+            "Trusted by over 200 customers. 99.95% uptime SLA. We are hiring "
+            "engineers. Founded in 2019. Our automation enables teams to scale."
+        ),
+    })
+    out = json.loads(run_once(inp))
+    expected = (
+        out["industry_fit"]
+        + out["company_size_fit"]
+        + out["decision_maker_seniority"]
+        + out["budget_likelihood_score"]
+        + out["growth_signals"]
+    )
+    assert out["lead_score"] == expected
+
+
+# ─── TB-05 additions ────────────────────────────────────────────────────────
+
+def test_cli_clean_run_has_no_law_zero_note():
+    """TB-05: a clean pipeline run should produce 0 violations → no [Law-0:] tag."""
+    inp = json.dumps({
+        "name": "Jane", "title": "Head of Sales", "company": "Acme",
+        "website_url": "",
+        "website_content": (
+            "Acme is the leading B2B SaaS platform. Founded in 2019. "
+            "Trusted by over 200 customers. Pricing starts at $499/month. "
+            "Enterprise customers get a 99.95% uptime SLA. "
+            "We are hiring across engineering, sales, and customer success. "
+            "Our automation enables teams to scale revenue by 40%."
+        ),
+    })
+    out = json.loads(run_once(inp))
+    assert "[Law-0:" not in out["rationale"]
+
+
+def test_cli_thin_run_also_clean_through_law_zero():
+    """TB-05: thin scrape goes through Law-0 cleanly too."""
+    inp = json.dumps({
+        "name": "", "title": "Founder", "company": "",
+        "website_url": "",
+        "website_content": "Coming soon. We're building something cool.",
+    })
+    out = json.loads(run_once(inp))
+    assert "[Law-0:" not in out["rationale"]
+    # And the output is still schema-shaped
+    assert "lead_score" in out
+    assert "signal_evidence" in out
+
+
+def test_cli_output_passes_schema_after_law_zero():
+    """TB-05: Law-0 wrapper output remains SCHEMA.json-compatible."""
+    import os
+    import json as _json
+    schema_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "SCHEMA.json",
+    )
+    with open(schema_path, "r", encoding="utf-8") as f:
+        schema = _json.load(f)
+    required = set(schema["required"])
+
+    inp = json.dumps({
+        "name": "Jane", "title": "VP Sales", "company": "Acme",
+        "website_url": "",
+        "website_content": "Acme. " * 100,  # rich enough to populate fields
+    })
+    out = json.loads(run_once(inp))
+    assert set(required).issubset(set(out.keys())), (
+        f"missing required fields: {set(required) - set(out.keys())}"
+    )
+    # signal_evidence sub-fields
+    se = out["signal_evidence"]
+    se_required = set(schema["properties"]["signal_evidence"]["required"])
+    assert se_required.issubset(set(se.keys()))
+
+
+# ─── TB-06 additions ────────────────────────────────────────────────────────
+
+def test_cli_clean_run_has_no_schema_violation_note():
+    """TB-06: a clean pipeline run should produce schema-valid output → no tag."""
+    inp = json.dumps({
+        "name": "Jane", "title": "Head of Sales", "company": "Acme",
+        "website_url": "",
+        "website_content": (
+            "Acme is the leading B2B SaaS platform. Founded in 2019. "
+            "Trusted by over 200 customers. Pricing starts at $499/month. "
+            "Enterprise customers get a 99.95% uptime SLA. "
+            "We are hiring across engineering. "
+            "Our automation enables teams to scale revenue by 40%."
+        ),
+    })
+    out = json.loads(run_once(inp))
+    assert "[Schema-violation:" not in out["rationale"]
+
+
+def test_cli_thin_run_also_schema_clean():
+    """TB-06: thin scrape output is schema-valid too."""
+    inp = json.dumps({
+        "name": "", "title": "Founder", "company": "",
+        "website_url": "",
+        "website_content": "Coming soon. We're building something cool.",
+    })
+    out = json.loads(run_once(inp))
+    assert "[Schema-violation:" not in out["rationale"]
+
+
+def test_cli_empty_input_schema_clean():
+    """TB-06: empty input still produces schema-valid output."""
+    out = json.loads(run_once("{}"))
+    assert "[Schema-violation:" not in out["rationale"]
+
+
+# ─── TB-07 additions ────────────────────────────────────────────────────────
+
+def test_cli_rationale_includes_enrichment_status():
+    """TB-07: every CLI run surfaces enrichment status in rationale."""
+    inp = json.dumps({
+        "name": "Jane", "title": "Head of Sales", "company": "Acme",
+        "website_url": "",
+        "website_content": "Acme is a B2B SaaS platform. " * 30,
+    })
+    out = json.loads(run_once(inp))
+    assert "Enrichment:" in out["rationale"]
+
+
+def test_cli_default_provider_shows_unavailable():
+    """TB-07: default StubProvider → rationale notes no provider configured."""
+    from anvil_scout.core.enrichment import reset_provider
+    reset_provider()  # belt-and-braces
+
+    inp = json.dumps({
+        "name": "", "title": "", "company": "",
+        "website_url": "", "website_content": "Padding text. " * 50,
+    })
+    out = json.loads(run_once(inp))
+    r = out["rationale"]
+    # Either phrasing is acceptable: "unavailable (...)" or "no provider configured"
+    assert ("unavailable" in r) or ("no provider configured" in r)
+
+
+def test_cli_rationale_still_schema_clean_with_enrichment():
+    """TB-07: adding enrichment to rationale does not break schema validation."""
+    inp = json.dumps({
+        "name": "Jane", "title": "Head of Sales", "company": "Acme",
+        "website_url": "",
+        "website_content": "Acme is a B2B SaaS platform. " * 30,
+    })
+    out = json.loads(run_once(inp))
+    # Schema validator note: only fires on actual violation
+    assert "[Schema-violation:" not in out["rationale"]
+    # Law-0 wrapper too
+    assert "[Law-0:" not in out["rationale"]
