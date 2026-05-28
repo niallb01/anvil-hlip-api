@@ -37,6 +37,7 @@ class ScoredOutput:
     decision_maker: bool = False
     rationale: str = ""
     signal_evidence: dict = field(default_factory=dict)
+    predicted_quality: float = 0.5
 
 
 def _build_output(data: dict, enrichment: dict | None = None) -> ScoredOutput:
@@ -82,6 +83,7 @@ def _build_output(data: dict, enrichment: dict | None = None) -> ScoredOutput:
         decision_maker=data.get("decision_maker", False),
         rationale="",
         signal_evidence=data.get("signal_evidence", {}),
+        predicted_quality=float(data.get("predicted_quality", 0.5)),
     )
 
 

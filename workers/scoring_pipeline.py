@@ -134,7 +134,7 @@ async def _pipeline(
     ), enrichment=enrichment)
     
     signal_evidence = scored.signal_evidence if isinstance(scored.signal_evidence, dict) else {}
-    confidence = signal_evidence.get("confidence", 0.0)
+    confidence = signal_evidence.get("signal_density", 0.0)
 
     # e. Generate outreach (skip if score too low)
     verified_signals = signal_evidence.get("verified", [])
@@ -190,7 +190,7 @@ async def _pipeline(
             budget_likelihood_ai, decision_maker_ai, rationale_ai,
             signal_evidence, scrape_quality, confidence_at_emission,
             draft_subject, draft_body, draft_created_at,
-            sherlock_signal
+            sherlock_signal, predicted_quality
         ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8,
             $9, $10, $11, $12,
@@ -198,7 +198,7 @@ async def _pipeline(
             $16, $17, $18,
             $19, $20, $21,
             $22, $23, NOW(),
-            $24
+            $24, $25
         )
         ON CONFLICT (contact_id) DO UPDATE SET
             lead_score_ai = EXCLUDED.lead_score_ai,
@@ -218,6 +218,7 @@ async def _pipeline(
             draft_body = EXCLUDED.draft_body,
             draft_created_at = EXCLUDED.draft_created_at,
             sherlock_signal = EXCLUDED.sherlock_signal,
+            predicted_quality = EXCLUDED.predicted_quality,
             scored_at = NOW()
         """,
         str(contact_id),
@@ -244,6 +245,7 @@ async def _pipeline(
         outreach["subject"],
         outreach["body"],
         json.dumps(sherlock_signal),
+        scored.predicted_quality,
     )
 
     logger.info("Lead persisted: contact_id=%s lead_score=%s", contact_id, scored.lead_score)
@@ -263,6 +265,7 @@ async def _pipeline(
             "budget_likelihood_ai": scored.budget_likelihood,
             "decision_maker_ai": "true" if scored.decision_maker else "false",
             "rationale_ai": outreach.get("rationale", ""),
+            "predicted_quality_ai": str(round(scored.predicted_quality * 100)),
             "anvil_outcome": "pending",
         },
     )

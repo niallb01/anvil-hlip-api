@@ -141,6 +141,7 @@ class HubSpotClient:
                 ],
             },
             {"name": "rationale_ai", "label": "Rationale (Anvil)", "type": "string", "fieldType": "textarea"},
+            {"name": "predicted_quality_ai", "label": "Conversion Probability (Anvil)", "type": "number", "fieldType": "number"},
             {
                 "name": "anvil_outcome",
                 "label": "Anvil Outcome",
