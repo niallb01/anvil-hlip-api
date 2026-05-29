@@ -174,10 +174,18 @@ def _card_from_span(raw_span: str, evidence_kind: EvidenceKind) -> SourceCard:
 
     signal_kind, subtype, span_text = _parse_span(raw_span, evidence_kind)
 
+    import re
+    # Strip Scout internal annotations from span text
+    clean_text = span_text
+    clean_text = re.sub(r'\s*\(corroborated by adjacent quantity\)', '', clean_text)
+    clean_text = re.sub(r'\s*\(no supporting quantity\)', '', clean_text)
+    clean_text = re.sub(r'….*$', '', clean_text)
+    clean_text = clean_text.strip().rstrip('.')
+
     return SourceCard.make(
         kind=SourceCardKind.SPAN,
         evidence_kind=evidence_kind,
-        span_text=span_text,
+        span_text=clean_text,
         signal_kind=signal_kind,
         subtype=subtype,
     )

@@ -48,7 +48,7 @@ COMPANY_SIGNAL_SLOT = SlotSpec(
 
 SCALE_SIGNAL_SLOT = SlotSpec(
     slot_name="scale_signal",
-    acceptable_signal_kinds=(SignalKind.QUANTITY, SignalKind.ENRICHMENT),
+    acceptable_signal_kinds=(SignalKind.ENRICHMENT, SignalKind.QUANTITY),
     min_evidence_kind=EvidenceKind.VERIFIED,
     critical=True,
     hedge_template="around {card_text}",

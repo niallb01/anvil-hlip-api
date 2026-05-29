@@ -42,7 +42,7 @@ from ...types import EvidenceKind, SignalKind
 
 QUANTITATIVE_PROOF_SLOT = SlotSpec(
     slot_name="quantitative_proof",
-    acceptable_signal_kinds=(SignalKind.QUANTITY,),
+    acceptable_signal_kinds=(SignalKind.ENRICHMENT, SignalKind.QUANTITY),
     min_evidence_kind=EvidenceKind.VERIFIED,
     critical=True,
     hedge_template="around {card_text}",
