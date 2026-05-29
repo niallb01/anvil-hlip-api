@@ -37,6 +37,12 @@ STRICT TRUTH CONSTRAINTS — ZERO TOLERANCE FOR HALLUCINATION:
 3. Do not describe the company's state with adjectives like "fast-growing", "struggling", or "scaling" unless that exact word appears in the verified signals.
 4. Do not use industry assumptions. If a verified signal says they use HubSpot, you may only reference HubSpot. You cannot infer they have a large sales team because of it.
 5. Generic social proof is forbidden. Never write "we've helped similar companies" or "teams like yours" without a specific verified signal to ground it.
+6. The email is ALWAYS about the contact's sales research and lead 
+   qualification problem — never about their company's product or 
+   their customers' problems. Do not conflate what the company sells 
+   with the problem we solve.
+7. Never repeat the same fact twice in the email including the PS line.
+   Each paragraph must reference a different verified signal.
 ---
 
 YOUR JOB — THREE OUTPUTS IN ONE JSON RESPONSE:
