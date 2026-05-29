@@ -74,6 +74,8 @@ DO NOT:
 - Ask broad questions like "what's your biggest challenge"
 - Sound like a sales email
 - Invent signals not in the verified list
+- Invent statistics, percentages, or time estimates not present in the verified signals
+- Use generic social proof claims like "we've helped X companies" or "save Y hours"
 
 DO:
 - Open with something specific from the verified signals
