@@ -8,6 +8,7 @@ import logging
 import asyncpg
 from celery import Celery
 
+from anvil_pantheon.bridge_api import certify_lead
 from clients.anthropic import AnthropicClient
 from clients.daedalus import store_daedalus_episode
 from clients.firecrawl import FirecrawlClient
@@ -180,24 +181,59 @@ async def _pipeline(
     missing_signals = signal_evidence.get("missing", [])
 
     if scored.lead_score >= icp.get("score_threshold", 40):
-        anthropic = AnthropicClient()
-        outreach = await anthropic.generate_outreach(
-            first_name=first_name,
-            last_name=last_name,
-            job_title=job_title,
-            company=company,
-            website_url=website_url,
-            website_content=website_content,
-            scrape_quality=scrape_quality,
-            lead_score=scored.lead_score,
-            decision_maker=scored.decision_maker,
-            budget_likelihood=scored.budget_likelihood,
-            verified_signals=verified_signals,
-            weak_signals=weak_signals,
-            missing_signals=missing_signals,
-            product_description=icp.get("product_description", ""),
-            target_seniority=icp.get("target_seniority", ""),
+        # Build scout output dict for Pantheon
+        scout_output = {
+            "lead_score": scored.lead_score,
+            "industry_fit": scored.industry_fit,
+            "company_size_fit": scored.company_size_fit,
+            "decision_maker_seniority": scored.decision_maker_seniority,
+            "budget_likelihood_score": scored.budget_likelihood_score,
+            "growth_signals": scored.growth_signals,
+            "pain_points": scored.pain_points,
+            "budget_likelihood": scored.budget_likelihood,
+            "decision_maker": scored.decision_maker,
+            "predicted_quality": scored.predicted_quality,
+            "rationale": scored.rationale,
+            "signal_evidence": signal_evidence,
+        }
+
+        # Try Pantheon first — certified, no hallucination
+        pantheon_result = certify_lead(scout_output)
+
+        if not pantheon_result["refused"] and pantheon_result["rendered_text"]:
+            # Pantheon succeeded — use certified output
+            outreach = {
+                "subject": f"Re: {company}",
+                "body": pantheon_result["rendered_text"],
+                "followup_days": 5 if scored.lead_score >= 80 else 7,
+                "rationale": "",
+                "pain_points": [],
+            }
+            logger.info("Pantheon certified email generated: contact_id=%s", contact_id)
+        else:
+            # Pantheon refused — no certified output available
+            logger.info(
+                "Pantheon refused (reasons=%s) — no outreach generated: contact_id=%s",
+                pantheon_result.get("refusal_reasons", []),
+                contact_id,
+            )
+            outreach = {"subject": "", "body": "", "followup_days": 0, "rationale": "", "pain_points": []}
+
+        # Generate certified rationale via Pantheon rationale template
+        rationale_result = certify_lead(
+            scout_output,
+            template_id="lead_rationale",
+            template_version="v0.1",
         )
+        if not rationale_result["refused"] and rationale_result["rendered_text"]:
+            outreach["rationale"] = rationale_result["rendered_text"].strip()
+            logger.info("Pantheon certified rationale generated: contact_id=%s", contact_id)
+        else:
+            logger.info(
+                "Pantheon rationale refused (reasons=%s): contact_id=%s",
+                rationale_result.get("refusal_reasons", []),
+                contact_id,
+            )
     else:
         outreach = {"subject": "", "body": "", "followup_days": 0, "rationale": "", "pain_points": []}
         logger.info("Outreach skipped: lead_score=%d below threshold for contact_id=%s", scored.lead_score, contact_id)
