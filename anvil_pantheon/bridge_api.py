@@ -197,11 +197,20 @@ def certify_lead(
         else:
             provenance_records = chain  # IDs only
 
+        # Extract certified span texts for hybrid Claude integration
+        certified_spans = [
+            card.span_text
+            for card in safe.all_cards()
+            if card.evidence_kind.value == "verified"
+            and card.kind.value in ("span", "enrichment")
+        ]
+
         return {
-            "certificate":     _certificate_to_dict(result.certificate),
-            "refused":         result.refused,
-            "refusal_reasons": list(result.refusal_reasons),
-            "rendered_text":   result.rendered_text,
+            "certificate":      _certificate_to_dict(result.certificate),
+            "refused":          result.refused,
+            "refusal_reasons":  list(result.refusal_reasons),
+            "rendered_text":    result.rendered_text,
+            "certified_spans":  certified_spans,
             "provenance_records": provenance_records,
             "ingress_guard": {
                 "clean":                 guard.clean,

@@ -200,43 +200,34 @@ async def _pipeline(
             "company": company,
         }
 
-        # Try Pantheon first — certified, no hallucination
+        # Hybrid: Pantheon certifies and cleans signals, Claude writes email
         pantheon_result = certify_lead(scout_output)
+        certified_spans = pantheon_result.get("certified_spans") or verified_signals
 
-        if not pantheon_result["refused"] and pantheon_result["rendered_text"]:
-            # Pantheon succeeded — use certified output
-            outreach = {
-                "subject": f"Re: {company}",
-                "body": pantheon_result["rendered_text"],
-                "followup_days": 5 if scored.lead_score >= 80 else 7,
-                "rationale": "",
-                "pain_points": [],
-            }
-            logger.info("Pantheon certified email generated: contact_id=%s", contact_id)
-        else:
-            # Pantheon refused — no certified output available
-            logger.info(
-                "Pantheon refused (reasons=%s) — no outreach generated: contact_id=%s",
-                pantheon_result.get("refusal_reasons", []),
-                contact_id,
-            )
-            outreach = {"subject": "", "body": "", "followup_days": 0, "rationale": "", "pain_points": []}
-
-        # Generate certified rationale via Pantheon rationale template
-        rationale_result = certify_lead(
-            scout_output,
-            template_id="lead_rationale",
-            template_version="v0.1",
+        anthropic = AnthropicClient()
+        outreach = await anthropic.generate_outreach(
+            first_name=first_name,
+            last_name=last_name,
+            job_title=job_title,
+            company=company,
+            website_url=website_url,
+            website_content="",
+            scrape_quality=scrape_quality,
+            lead_score=scored.lead_score,
+            decision_maker=scored.decision_maker,
+            budget_likelihood=scored.budget_likelihood,
+            verified_signals=certified_spans,
+            weak_signals=weak_signals,
+            missing_signals=missing_signals,
+            product_description=icp.get("product_description", ""),
+            target_seniority=icp.get("target_seniority", ""),
         )
-        if not rationale_result["refused"] and rationale_result["rendered_text"]:
-            outreach["rationale"] = rationale_result["rendered_text"].strip()
-            logger.info("Pantheon certified rationale generated: contact_id=%s", contact_id)
-        else:
-            logger.info(
-                "Pantheon rationale refused (reasons=%s): contact_id=%s",
-                rationale_result.get("refusal_reasons", []),
-                contact_id,
-            )
+        logger.info(
+            "Hybrid outreach: pantheon_certified=%s spans=%d contact_id=%s",
+            not pantheon_result.get("refused"),
+            len(certified_spans),
+            contact_id,
+        )
     else:
         outreach = {"subject": "", "body": "", "followup_days": 0, "rationale": "", "pain_points": []}
         logger.info("Outreach skipped: lead_score=%d below threshold for contact_id=%s", scored.lead_score, contact_id)
