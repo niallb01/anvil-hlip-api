@@ -119,7 +119,7 @@ def adapt_scout_output(scout_output: Dict[str, Any]) -> SourceBook:
     # Add contact metadata as METADATA SourceCards
     for meta_key, signal_kind in (
         ("name", SignalKind.TESTIMONY),
-        ("title", SignalKind.TESTIMONY),
+        ("title", SignalKind.QUANTITY),
         ("company", SignalKind.CAUSAL),
     ):
         val = scout_output.get(meta_key, "")
@@ -202,7 +202,9 @@ def _card_from_span(raw_span: str, evidence_kind: EvidenceKind) -> SourceCard:
     clean_text = re.sub(r'industry_class=([\w\s&]+)', r'\1 industry', clean_text)
     clean_text = re.sub(r'decision_maker_confirmed=\w+', '', clean_text)
     # Remove trailing truncation — catches "clarity and c" style cuts
-    clean_text = re.sub(r'\s+\w{1,3}$', '', clean_text)
+    clean_text = re.sub(r'\s+\w{1,4}$', '', clean_text)
+    # Also catch truncation before last word if sentence feels incomplete
+    clean_text = re.sub(r'\s+(and|or|with|for|the|a|an|to|of|in|at|by)\s*$', '', clean_text, flags=re.IGNORECASE)
     clean_text = re.sub(r'….*$', '', clean_text)
     clean_text = re.sub(r'\.\.\.$', '', clean_text)
     clean_text = clean_text.strip().rstrip('.,')

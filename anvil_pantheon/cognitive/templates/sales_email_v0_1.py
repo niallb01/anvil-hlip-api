@@ -33,14 +33,14 @@ CONTACT_NAME_SLOT = SlotSpec(
     slot_name="contact_name",
     acceptable_signal_kinds=(SignalKind.TESTIMONY,),
     min_evidence_kind=EvidenceKind.VERIFIED,
-    critical=True,
+    critical=False,
     hedge_template="{card_text}",
-    refusal_text="",
+    refusal_text="there",
 )
 
 QUANTITATIVE_PROOF_SLOT = SlotSpec(
     slot_name="quantitative_proof",
-    acceptable_signal_kinds=(SignalKind.ENRICHMENT, SignalKind.QUANTITY),
+    acceptable_signal_kinds=(SignalKind.QUANTITY, SignalKind.ENRICHMENT),
     min_evidence_kind=EvidenceKind.VERIFIED,
     critical=True,
     hedge_template="around {card_text}",
