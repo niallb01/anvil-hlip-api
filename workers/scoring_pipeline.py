@@ -195,6 +195,9 @@ async def _pipeline(
             "predicted_quality": scored.predicted_quality,
             "rationale": scored.rationale,
             "signal_evidence": signal_evidence,
+            "name": full_name,
+            "title": job_title,
+            "company": company,
         }
 
         # Try Pantheon first — certified, no hallucination

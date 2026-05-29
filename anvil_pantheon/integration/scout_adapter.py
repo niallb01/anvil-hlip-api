@@ -116,6 +116,22 @@ def adapt_scout_output(scout_output: Dict[str, Any]) -> SourceBook:
 
     book = SourceBook(scout_metadata=metadata)
 
+    # Add contact metadata as METADATA SourceCards
+    for meta_key, signal_kind in (
+        ("name", SignalKind.TESTIMONY),
+        ("title", SignalKind.TESTIMONY),
+        ("company", SignalKind.CAUSAL),
+    ):
+        val = scout_output.get(meta_key, "")
+        if val:
+            book.add(SourceCard.make(
+                kind=SourceCardKind.METADATA,
+                evidence_kind=EvidenceKind.VERIFIED,
+                span_text=str(val),
+                signal_kind=signal_kind,
+                subtype=meta_key,
+            ))
+
     # Process each evidence kind in turn
     for raw_span in sig_ev.get("verified", []):
         book.add(_card_from_span(raw_span, EvidenceKind.VERIFIED))
@@ -175,19 +191,20 @@ def _card_from_span(raw_span: str, evidence_kind: EvidenceKind) -> SourceCard:
     signal_kind, subtype, span_text = _parse_span(raw_span, evidence_kind)
 
     import re
-    # Strip Scout internal annotations from span text
     clean_text = span_text
     # Remove corroboration annotations
     clean_text = re.sub(r'\s*\(corroborated by adjacent quantity\)', '', clean_text)
     clean_text = re.sub(r'\s*\(no supporting quantity\)', '', clean_text)
-    # Remove Apollo provider prefix from enrichment signals
-    clean_text = re.sub(r'provider=_ApolloProvider;\s*', '', clean_text)
+    # Remove Apollo provider prefix
     clean_text = re.sub(r'provider=\w+;\s*', '', clean_text)
-    # Remove trailing truncation
+    # Convert key=value enrichment format to readable text
+    clean_text = re.sub(r'employee_count=(\d+)', r'\1 employees', clean_text)
+    clean_text = re.sub(r'industry_class=([\w\s&]+)', r'\1 industry', clean_text)
+    clean_text = re.sub(r'decision_maker_confirmed=\w+', '', clean_text)
+    # Remove trailing truncation — catches "clarity and c" style cuts
+    clean_text = re.sub(r'\s+\w{1,3}$', '', clean_text)
     clean_text = re.sub(r'….*$', '', clean_text)
     clean_text = re.sub(r'\.\.\.$', '', clean_text)
-    # Remove mid-sentence truncation (text ending abruptly with lowercase word)
-    clean_text = re.sub(r'\s+\w$', '', clean_text)
     clean_text = clean_text.strip().rstrip('.,')
 
     return SourceCard.make(

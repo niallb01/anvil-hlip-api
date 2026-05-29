@@ -1,35 +1,26 @@
-"""Anvil-Pantheon-Floor — sales_email_v0_1 template (Packet 9).
+"""Anvil-Pantheon-Floor — sales_email_v0_1 template.
 
-The first concrete cognitive template. Narrow MVP for B2B sales-email
-generation. Three slots, each anchored to a specific signal_kind from
-the SourceBook. Critical slot (quantitative_proof) refuses the whole
-template if not satisfied -- you cannot send a "data-backed" sales
-email without data.
+Challenger Selling email template. Four slots anchored to SourceCards.
+Critical slot (quantitative_proof) refuses the whole template if not
+satisfied — you cannot send a data-backed email without data.
 
 SLOTS:
 
-  - quantitative_proof  (CRITICAL)
-      Requires: SignalKind.QUANTITY, min VERIFIED
-      Rationale: a B2B email without at least one verified number is
-      vibes. Refuse rather than emit a vague pitch.
+  - contact_name        (CRITICAL)
+      Requires: SignalKind.TESTIMONY, subtype=name, METADATA card
+      Rationale: personalisation requires a real name.
 
-  - testimony_hook      (not critical)
-      Requires: SignalKind.TESTIMONY, min VERIFIED
-      Rationale: optional social-proof line; refusal_text omits the
-      hook gracefully rather than refusing the email.
+  - quantitative_proof  (CRITICAL)
+      Requires: SignalKind.ENRICHMENT or QUANTITY, min VERIFIED
+      Rationale: Challenger opening must reference a specific fact.
 
   - causal_connector    (not critical)
       Requires: SignalKind.CAUSAL, min WEAK
-      Rationale: a soft connecting clause; WEAK-evidence acceptance
-      means a hedge phrasing is used when only weak evidence is present.
+      Rationale: the tension point — what the fact implies.
 
-BODY:
-  Three-paragraph email with three placeholders. When all slots fill
-  GROUNDED, you get a tight evidence-anchored pitch. When testimony or
-  causal slots refuse, the refusal_text fills inline (graceful
-  degradation). When quantitative_proof refuses, the whole template
-  refuses (the Oracle moves to a different template or refuses
-  entirely).
+  - testimony_hook      (not critical)
+      Requires: SignalKind.TESTIMONY, min VERIFIED
+      Rationale: optional social proof or first-person grounding.
 """
 
 from __future__ import annotations
@@ -38,7 +29,14 @@ from ..template_library import SlotSpec, Template
 from ...types import EvidenceKind, SignalKind
 
 
-# ─── Slot specs ───────────────────────────────────────────────────────────
+CONTACT_NAME_SLOT = SlotSpec(
+    slot_name="contact_name",
+    acceptable_signal_kinds=(SignalKind.TESTIMONY,),
+    min_evidence_kind=EvidenceKind.VERIFIED,
+    critical=True,
+    hedge_template="{card_text}",
+    refusal_text="",
+)
 
 QUANTITATIVE_PROOF_SLOT = SlotSpec(
     slot_name="quantitative_proof",
@@ -46,16 +44,7 @@ QUANTITATIVE_PROOF_SLOT = SlotSpec(
     min_evidence_kind=EvidenceKind.VERIFIED,
     critical=True,
     hedge_template="around {card_text}",
-    refusal_text="",  # not used (critical -> template refuses)
-)
-
-TESTIMONY_HOOK_SLOT = SlotSpec(
-    slot_name="testimony_hook",
-    acceptable_signal_kinds=(SignalKind.TESTIMONY,),
-    min_evidence_kind=EvidenceKind.VERIFIED,
-    critical=False,
-    hedge_template="and customers note {card_text}",
-    refusal_text="",  # graceful: just omit the hook
+    refusal_text="",
 )
 
 CAUSAL_CONNECTOR_SLOT = SlotSpec(
@@ -67,32 +56,37 @@ CAUSAL_CONNECTOR_SLOT = SlotSpec(
     refusal_text="",
 )
 
-
-# ─── Template body ────────────────────────────────────────────────────────
-
-# Three sentences with placeholders. After substitution:
-#  - GROUNDED quantitative_proof: "I noticed your team is doing 99.99% uptime"
-#  - GROUNDED testimony_hook:     "Trusted by Snowflake and Datadog stood out"
-#  - HEDGE causal_connector:      "seemingly enables faster decisions"
-#  - REFUSED non-critical:        substitutes "" -> empty inline gap
-
-_BODY = (
-    "Hi -- I came across your team and noticed {quantitative_proof}. "
-    "{testimony_hook} {causal_connector} "
-    "Would you have 15 minutes this week to discuss how we approach "
-    "similar problems?"
+TESTIMONY_HOOK_SLOT = SlotSpec(
+    slot_name="testimony_hook",
+    acceptable_signal_kinds=(SignalKind.TESTIMONY,),
+    min_evidence_kind=EvidenceKind.VERIFIED,
+    critical=False,
+    hedge_template="and customers note {card_text}",
+    refusal_text="",
 )
 
 
-# ─── The exported Template ────────────────────────────────────────────────
+_BODY = (
+    "{contact_name},\n\n"
+    "I noticed {quantitative_proof}. "
+    "{causal_connector}\n\n"
+    "{testimony_hook} "
+    "Most sales leaders find that as this scales, their team spends "
+    "more time on manual research than actual selling.\n\n"
+    "How are you currently ensuring your reps focus on the right "
+    "prospects at this stage?\n\n"
+    "Best,"
+)
+
 
 SALES_EMAIL_V0_1 = Template(
     template_id="sales_email",
     version="v0.1",
     slot_specs=(
+        CONTACT_NAME_SLOT,
         QUANTITATIVE_PROOF_SLOT,
-        TESTIMONY_HOOK_SLOT,
         CAUSAL_CONNECTOR_SLOT,
+        TESTIMONY_HOOK_SLOT,
     ),
     body=_BODY,
 )
