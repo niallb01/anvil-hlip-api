@@ -177,10 +177,18 @@ def _card_from_span(raw_span: str, evidence_kind: EvidenceKind) -> SourceCard:
     import re
     # Strip Scout internal annotations from span text
     clean_text = span_text
+    # Remove corroboration annotations
     clean_text = re.sub(r'\s*\(corroborated by adjacent quantity\)', '', clean_text)
     clean_text = re.sub(r'\s*\(no supporting quantity\)', '', clean_text)
+    # Remove Apollo provider prefix from enrichment signals
+    clean_text = re.sub(r'provider=_ApolloProvider;\s*', '', clean_text)
+    clean_text = re.sub(r'provider=\w+;\s*', '', clean_text)
+    # Remove trailing truncation
     clean_text = re.sub(r'….*$', '', clean_text)
-    clean_text = clean_text.strip().rstrip('.')
+    clean_text = re.sub(r'\.\.\.$', '', clean_text)
+    # Remove mid-sentence truncation (text ending abruptly with lowercase word)
+    clean_text = re.sub(r'\s+\w$', '', clean_text)
+    clean_text = clean_text.strip().rstrip('.,')
 
     return SourceCard.make(
         kind=SourceCardKind.SPAN,
